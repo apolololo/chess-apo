@@ -66,23 +66,36 @@ const Game = () => {
           newGame.loadPgn(payload.pgn);
           setGame(newGame);
         }
+        // Only show settings for the game creator
+        if (payload.players.length === 1 && payload.players[0] === playerId) {
+          setShowSettings(true);
+        } else {
+          setShowSettings(false);
+        }
         setIsWaiting(payload.players.length < 2);
       })
       .subscribe();
 
+    // Send initial state when creating the game
+    const initialState = {
+      players: [playerId],
+      currentTurn: 'white',
+      pgn: '',
+      timeControl: settings.timeControl,
+      increment: settings.increment,
+      moves: [],
+    };
+
     channel.send({
       type: 'broadcast',
-      event: 'player_join',
-      payload: { 
-        playerId,
-        settings: isWaiting ? settings : undefined
-      }
+      event: 'game_state',
+      payload: initialState
     });
 
     return () => {
       channel.unsubscribe();
     };
-  }, [id, playerId, navigate, settings, isWaiting]);
+  }, [id, playerId, navigate, settings]);
 
   useEffect(() => {
     if (gameState?.players.length === 2) {
@@ -92,6 +105,7 @@ const Game = () => {
       } else if (playerIndex === 1) {
         setPlayerColor('black');
       }
+      setShowSettings(false);
     }
   }, [gameState?.players, playerId]);
 
@@ -136,10 +150,7 @@ const Game = () => {
   };
 
   const copyGameLink = () => {
-    const baseUrl = window.location.origin.includes('webcontainer') 
-      ? 'https://chess-apo.netlify.app'
-      : window.location.origin;
-    const url = `${baseUrl}/game/${id}`;
+    const url = `${window.location.origin}/game/${id}`;
     navigator.clipboard.writeText(url);
     toast({
       title: "Link copied!",
@@ -266,7 +277,17 @@ const Game = () => {
     }
   };
 
-  if (isWaiting && showSettings) {
+  if (!gameState) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <div className="text-center">
+          <h2 className="text-2xl font-bold text-foreground">Loading game...</h2>
+        </div>
+      </div>
+    );
+  }
+
+  if (isWaiting && showSettings && gameState.players[0] === playerId) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-background p-4">
         <div className="w-full max-w-md p-6 bg-card rounded-lg shadow-lg">
