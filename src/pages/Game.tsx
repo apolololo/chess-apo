@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Chessboard } from 'react-chessboard';
 import { Chess } from 'chess.js';
@@ -25,6 +25,9 @@ interface GameState {
   game_result?: string;
   moves: string[];
   creator: string;
+  white_time: number;
+  black_time: number;
+  started_at?: string;
 }
 
 interface GameSettings {
@@ -32,7 +35,18 @@ interface GameSettings {
   increment: number;
 }
 
+interface Timer {
+  minutes: number;
+  seconds: number;
+}
+
 const SITE_URL = 'https://chess-apo.netlify.app';
+
+const formatTime = (totalSeconds: number): Timer => {
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return { minutes, seconds };
+};
 
 const Game = () => {
   const { id } = useParams();
@@ -48,6 +62,50 @@ const Game = () => {
   });
   const [showSettings, setShowSettings] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
+  const [whiteTime, setWhiteTime] = useState<Timer>({ minutes: 10, seconds: 0 });
+  const [blackTime, setBlackTime] = useState<Timer>({ minutes: 10, seconds: 0 });
+  const timerInterval = useRef<NodeJS.Timeout | null>(null);
+
+  const startTimers = () => {
+    if (timerInterval.current) {
+      clearInterval(timerInterval.current);
+    }
+
+    timerInterval.current = setInterval(async () => {
+      if (!gameState || gameState.game_result) return;
+
+      const currentTime = new Date().getTime();
+      const startTime = gameState.started_at ? new Date(gameState.started_at).getTime() : currentTime;
+      const elapsedSeconds = Math.floor((currentTime - startTime) / 1000);
+
+      const whiteTimeLeft = Math.max(0, gameState.white_time - (gameState.current_turn === 'white' ? elapsedSeconds : 0));
+      const blackTimeLeft = Math.max(0, gameState.black_time - (gameState.current_turn === 'black' ? elapsedSeconds : 0));
+
+      setWhiteTime(formatTime(whiteTimeLeft));
+      setBlackTime(formatTime(blackTimeLeft));
+
+      // Check for time out
+      if (whiteTimeLeft === 0 || blackTimeLeft === 0) {
+        const winner = whiteTimeLeft === 0 ? 'black' : 'white';
+        await updateGameState({
+          game_result: winner === 'white' ? '1-0' : '0-1'
+        });
+        clearInterval(timerInterval.current);
+        toast({
+          title: `Game Over`,
+          description: `${winner === 'white' ? 'White' : 'Black'} wins on time`,
+        });
+      }
+    }, 1000);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (timerInterval.current) {
+        clearInterval(timerInterval.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!id) {
@@ -83,7 +141,9 @@ const Game = () => {
             time_control: settings.time_control,
             increment: settings.increment,
             moves: [],
-            creator: playerId
+            creator: playerId,
+            white_time: settings.time_control * 60,
+            black_time: settings.time_control * 60
           };
 
           const { error: insertError } = await supabase
@@ -99,16 +159,27 @@ const Game = () => {
         } else {
           if (existingGame.players.length < 2 && !existingGame.players.includes(playerId)) {
             const updatedPlayers = [...existingGame.players, playerId];
+            const started_at = new Date().toISOString();
             const { error: updateError } = await supabase
               .from('games')
-              .update({ players: updatedPlayers })
+              .update({ 
+                players: updatedPlayers,
+                started_at: started_at
+              })
               .eq('id', id);
 
             if (updateError) {
               throw updateError;
             }
 
-            setGameState({ ...existingGame, players: updatedPlayers });
+            setGameState({ ...existingGame, players: updatedPlayers, started_at });
+            
+            // Notify the creator that the game is starting
+            channel.send({
+              type: 'broadcast',
+              event: 'game_state',
+              payload: { ...existingGame, players: updatedPlayers, started_at }
+            });
           } else {
             setGameState(existingGame);
           }
@@ -126,25 +197,15 @@ const Game = () => {
                 console.error('Error loading PGN:', error);
               }
             }
-          })
-          .subscribe(async (status) => {
-            if (status === 'SUBSCRIBED') {
-              const { data } = await supabase
-                .from('games')
-                .select('*')
-                .eq('id', id)
-                .maybeSingle();
-
-              if (data) {
-                setGameState(data);
-                if (data.pgn) {
-                  const newGame = new Chess();
-                  newGame.loadPgn(data.pgn);
-                  setGame(newGame);
-                }
-              }
+            
+            // Start timers when both players have joined
+            if (payload.players.length === 2 && payload.started_at) {
+              setShowSettings(false);
+              setIsWaiting(false);
+              startTimers();
             }
-          });
+          })
+          .subscribe();
 
         setIsInitialized(true);
       } catch (error) {
@@ -170,10 +231,13 @@ const Game = () => {
       }
       setShowSettings(false);
       setIsWaiting(false);
+      if (gameState.started_at) {
+        startTimers();
+      }
     } else {
       setIsWaiting(true);
     }
-  }, [gameState?.players, playerId]);
+  }, [gameState?.players, playerId, gameState?.started_at]);
 
   const makeMove = async (move: any) => {
     if (!gameState || isWaiting || !id) return false;
@@ -185,11 +249,18 @@ const Game = () => {
       const result = newGame.move(move);
       
       if (result) {
+        // Add increment time for the player who just moved
+        const currentTime = new Date().getTime();
+        const startTime = gameState.started_at ? new Date(gameState.started_at).getTime() : currentTime;
+        const elapsedSeconds = Math.floor((currentTime - startTime) / 1000);
+        
         const newState = {
           ...gameState,
           current_turn: game.turn() === 'w' ? 'black' : 'white',
           pgn: newGame.pgn(),
-          moves: [...(gameState.moves || []), `${game.turn() === 'w' ? 'White' : 'Black'}: ${move.from}${move.to}`]
+          moves: [...(gameState.moves || []), `${game.turn() === 'w' ? 'White' : 'Black'}: ${move.from}${move.to}`],
+          white_time: game.turn() === 'b' ? gameState.white_time + gameState.increment : gameState.white_time,
+          black_time: game.turn() === 'w' ? gameState.black_time + gameState.increment : gameState.black_time
         };
 
         const { error: updateError } = await supabase
@@ -428,9 +499,19 @@ const Game = () => {
       <div className="w-full max-w-[800px] space-y-4">
         <div className="flex justify-between items-center">
           <div>
-            <h2 className="text-xl font-bold text-foreground">
-              {playerColor ? `You are playing as ${playerColor}` : 'Spectating'}
-            </h2>
+            <div className="flex items-center gap-4">
+              <h2 className="text-xl font-bold text-foreground">
+                {playerColor ? `You are playing as ${playerColor}` : 'Spectating'}
+              </h2>
+              <div className="flex gap-8">
+                <div className={`text-lg font-mono ${game.turn() === 'w' ? 'text-primary font-bold' : ''}`}>
+                  White: {whiteTime.minutes}:{whiteTime.seconds.toString().padStart(2, '0')}
+                </div>
+                <div className={`text-lg font-mono ${game.turn() === 'b' ? 'text-primary font-bold' : ''}`}>
+                  Black: {blackTime.minutes}:{blackTime.seconds.toString().padStart(2, '0')}
+                </div>
+              </div>
+            </div>
             <p className="text-muted-foreground">
               {isGameOver ? (
                 `Game Over - ${gameState?.game_result || game.isCheckmate() ? 
