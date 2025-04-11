@@ -28,6 +28,8 @@ interface GameState {
   white_time: number;
   black_time: number;
   started_at?: string;
+  white_player?: string;
+  black_player?: string;
 }
 
 interface GameSettings {
@@ -134,6 +136,8 @@ const Game = () => {
         });
 
         if (!existingGame) {
+          // Randomly assign color to creator
+          const isWhite = Math.random() < 0.5;
           const initialState: Omit<GameState, 'id'> = {
             players: [playerId],
             current_turn: 'white',
@@ -143,7 +147,9 @@ const Game = () => {
             moves: [],
             creator: playerId,
             white_time: settings.time_control * 60,
-            black_time: settings.time_control * 60
+            black_time: settings.time_control * 60,
+            white_player: isWhite ? playerId : undefined,
+            black_player: isWhite ? undefined : playerId
           };
 
           const { error: insertError } = await supabase
@@ -155,33 +161,45 @@ const Game = () => {
           }
 
           setGameState({ id, ...initialState });
+          setPlayerColor(isWhite ? 'white' : 'black');
           setShowSettings(true);
         } else {
           if (existingGame.players.length < 2 && !existingGame.players.includes(playerId)) {
             const updatedPlayers = [...existingGame.players, playerId];
             const started_at = new Date().toISOString();
+            
+            // Assign the second player to the remaining color
+            const updatedState = {
+              players: updatedPlayers,
+              started_at,
+              white_player: existingGame.white_player || (existingGame.black_player ? playerId : undefined),
+              black_player: existingGame.black_player || (existingGame.white_player ? playerId : undefined)
+            };
+
             const { error: updateError } = await supabase
               .from('games')
-              .update({ 
-                players: updatedPlayers,
-                started_at: started_at
-              })
+              .update(updatedState)
               .eq('id', id);
 
             if (updateError) {
               throw updateError;
             }
 
-            setGameState({ ...existingGame, players: updatedPlayers, started_at });
+            setGameState({ ...existingGame, ...updatedState });
+            setPlayerColor(existingGame.white_player ? 'black' : 'white');
             
-            // Notify the creator that the game is starting
             channel.send({
               type: 'broadcast',
               event: 'game_state',
-              payload: { ...existingGame, players: updatedPlayers, started_at }
+              payload: { ...existingGame, ...updatedState }
             });
           } else {
             setGameState(existingGame);
+            if (existingGame.white_player === playerId) {
+              setPlayerColor('white');
+            } else if (existingGame.black_player === playerId) {
+              setPlayerColor('black');
+            }
           }
         }
 
@@ -198,7 +216,6 @@ const Game = () => {
               }
             }
             
-            // Start timers when both players have joined
             if (payload.players.length === 2 && payload.started_at) {
               setShowSettings(false);
               setIsWaiting(false);
@@ -223,12 +240,6 @@ const Game = () => {
 
   useEffect(() => {
     if (gameState?.players.length === 2) {
-      const playerIndex = gameState.players.indexOf(playerId);
-      if (playerIndex === 0) {
-        setPlayerColor('white');
-      } else if (playerIndex === 1) {
-        setPlayerColor('black');
-      }
       setShowSettings(false);
       setIsWaiting(false);
       if (gameState.started_at) {
@@ -237,7 +248,7 @@ const Game = () => {
     } else {
       setIsWaiting(true);
     }
-  }, [gameState?.players, playerId, gameState?.started_at]);
+  }, [gameState?.players, gameState?.started_at]);
 
   const makeMove = async (move: any) => {
     if (!gameState || isWaiting || !id) return false;
@@ -249,7 +260,6 @@ const Game = () => {
       const result = newGame.move(move);
       
       if (result) {
-        // Add increment time for the player who just moved
         const currentTime = new Date().getTime();
         const startTime = gameState.started_at ? new Date(gameState.started_at).getTime() : currentTime;
         const elapsedSeconds = Math.floor((currentTime - startTime) / 1000);
@@ -375,7 +385,7 @@ const Game = () => {
   };
 
   const requestTakeback = () => {
-    if (!id || !playerColor) return;
+    if (!id || !playerColor || !gameState) return;
     updateGameState({ pending_takeback_request: playerId });
     toast({
       title: "Takeback requested",
@@ -384,18 +394,25 @@ const Game = () => {
   };
 
   const respondToTakeback = (accept: boolean) => {
-    if (!id || !gameState?.pending_takeback_request) return;
+    if (!id || !gameState?.pending_takeback_request || !game.history().length) return;
+    
     if (accept) {
-      const newGame = new Chess();
       const moves = game.history();
-      moves.pop();
+      moves.pop(); // Remove last move
+      
+      const newGame = new Chess();
       moves.forEach(move => newGame.move(move));
+      
+      const lastMove = gameState.moves[gameState.moves.length - 1];
+      const isWhiteMove = lastMove.startsWith('White');
       
       updateGameState({
         pending_takeback_request: null,
         pgn: newGame.pgn(),
-        moves: gameState.moves.slice(0, -1)
+        moves: gameState.moves.slice(0, -1),
+        current_turn: isWhiteMove ? 'white' : 'black'
       });
+      
       setGame(newGame);
       toast({
         title: "Takeback accepted",
