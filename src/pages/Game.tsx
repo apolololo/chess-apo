@@ -6,26 +6,12 @@ import { supabase } from '@/lib/supabase';
 import { Button } from '@/components/ui/button';
 import { toast } from '@/components/ui/use-toast';
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-} from "@/components/ui/dialog";
-import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-
-// Sound effects
-const MOVE_SOUND = new Audio('/sounds/move.mp3');
-const CAPTURE_SOUND = new Audio('/sounds/capture.mp3');
-const CHECK_SOUND = new Audio('/sounds/check.mp3');
-const GAME_END_SOUND = new Audio('/sounds/game-end.mp3');
-const PIECE_SELECT_SOUND = new Audio('/sounds/piece-select.mp3');
 
 interface GameState {
   id: string;
@@ -44,296 +30,565 @@ interface GameState {
   started_at?: string;
   white_player?: string;
   black_player?: string;
+  score?: {
+    white: number;
+    black: number;
+    draws: number;
+  };
 }
 
 interface GameSettings {
-  timeControl: number;
+  time_control: number;
   increment: number;
 }
+
+interface Timer {
+  minutes: number;
+  seconds: number;
+}
+
+const SITE_URL = 'https://chess-apo.netlify.app';
+
+const formatTime = (totalSeconds: number): Timer => {
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return { minutes, seconds };
+};
 
 const Game = () => {
   const { id } = useParams();
   const navigate = useNavigate();
   const [game, setGame] = useState(new Chess());
   const [gameState, setGameState] = useState<GameState | null>(null);
-  const [playerColor, setPlayerColor] = useState<'white' | 'black' | null>(null);
-  const [lastMove, setLastMove] = useState<{ from: string; to: string } | null>(null);
-  const [whiteTime, setWhiteTime] = useState({ minutes: 10, seconds: 0 });
-  const [blackTime, setBlackTime] = useState({ minutes: 10, seconds: 0 });
-  const [isGameOver, setIsGameOver] = useState(false);
   const [playerId] = useState(() => crypto.randomUUID());
-  const [showSettings, setShowSettings] = useState(true);
+  const [isWaiting, setIsWaiting] = useState(true);
+  const [playerColor, setPlayerColor] = useState<'white' | 'black' | null>(null);
   const [settings, setSettings] = useState<GameSettings>({
-    timeControl: 10,
-    increment: 5
+    time_control: 10,
+    increment: 5,
   });
-  const [gameUrl, setGameUrl] = useState('');
+  const [showSettings, setShowSettings] = useState(false);
+  const [isInitialized, setIsInitialized] = useState(false);
+  const [whiteTime, setWhiteTime] = useState<Timer>({ minutes: 10, seconds: 0 });
+  const [blackTime, setBlackTime] = useState<Timer>({ minutes: 10, seconds: 0 });
+  const [lastMove, setLastMove] = useState<{ from: string; to: string } | null>(null);
+  const timerInterval = useRef<NodeJS.Timeout | null>(null);
 
-  const copyGameUrl = () => {
-    navigator.clipboard.writeText(gameUrl);
-    toast({
-      title: "Lien copié",
-      description: "Le lien de la partie a été copié dans le presse-papier"
-    });
-  };
-
-  useEffect(() => {
-    setGameUrl(`${window.location.origin}/game/${id}`);
-  }, [id]);
-
-  const createGame = async () => {
-    if (!id) return;
-
-    const newGameState = {
-      id,
-      players: [playerId],
-      creator: playerId,
-      current_turn: 'white',
-      pgn: '',
-      time_control: settings.timeControl,
-      increment: settings.increment,
-      moves: [],
-      white_time: settings.timeControl * 60,
-      black_time: settings.timeControl * 60,
-      white_player: playerId
-    };
-
-    const { error } = await supabase.from('games').insert(newGameState);
-    
-    if (!error) {
-      setGameState(newGameState);
-      setPlayerColor('white');
-      setShowSettings(false);
-      toast({
-        title: "Partie créée",
-        description: "Partagez le lien pour inviter un adversaire"
-      });
+  const cleanupGame = async () => {
+    if (id) {
+      await supabase
+        .from('games')
+        .delete()
+        .eq('id', id);
     }
   };
 
   useEffect(() => {
-    if (!id) return;
-
-    const initializeGame = async () => {
-      const { data: existingGame } = await supabase
-        .from('games')
-        .select('*')
-        .eq('id', id)
-        .single();
-
-      if (existingGame) {
-        if (!existingGame.black_player && existingGame.white_player !== playerId) {
-          const updatedGame = {
-            ...existingGame,
-            black_player: playerId,
-            players: [...(existingGame.players || []), playerId],
-            started_at: new Date().toISOString()
-          };
-          await supabase.from('games').update(updatedGame).eq('id', id);
-          setGameState(updatedGame);
-          setPlayerColor('black');
-          setShowSettings(false);
-        } else {
-          setGameState(existingGame);
-          if (existingGame.white_player === playerId) setPlayerColor('white');
-          if (existingGame.black_player === playerId) setPlayerColor('black');
-          setShowSettings(false);
-        }
-
-        if (existingGame.pgn) {
-          const loadedGame = new Chess();
-          loadedGame.loadPgn(existingGame.pgn);
-          setGame(loadedGame);
-        }
-      }
-
-      // Subscribe to game changes
-      const channel = supabase.channel(`game:${id}`);
-      channel.subscribe((status) => {
-        if (status === 'SUBSCRIBED') {
-          channel.on('*', (payload) => {
-            if (payload.eventType === 'UPDATE') {
-              const newState = payload.new;
-              setGameState(newState);
-              if (newState.pgn) {
-                const newGame = new Chess();
-                newGame.loadPgn(newState.pgn);
-                setGame(newGame);
-                
-                if (newGame.isCheck()) {
-                  CHECK_SOUND.play();
-                } else if (newGame.history().length > game.history().length) {
-                  const lastMove = newGame.history({ verbose: true }).pop();
-                  if (lastMove?.captured) {
-                    CAPTURE_SOUND.play();
-                  } else {
-                    MOVE_SOUND.play();
-                  }
-                }
-              }
-            }
-          });
-        }
-      });
+    const handleUnload = () => {
+      cleanupGame();
     };
 
-    initializeGame();
+    window.addEventListener('beforeunload', handleUnload);
+
+    return () => {
+      window.removeEventListener('beforeunload', handleUnload);
+      cleanupGame();
+    };
   }, [id]);
 
-  const onDrop = (sourceSquare: string, targetSquare: string) => {
-    if (!gameState || game.turn() !== playerColor?.[0]) return false;
+  const startTimers = () => {
+    if (timerInterval.current) {
+      clearInterval(timerInterval.current);
+    }
+
+    timerInterval.current = setInterval(async () => {
+      if (!gameState || gameState.game_result) return;
+
+      const currentTime = new Date().getTime();
+      const startTime = gameState.started_at ? new Date(gameState.started_at).getTime() : currentTime;
+      const elapsedSeconds = Math.floor((currentTime - startTime) / 1000);
+
+      const whiteTimeLeft = Math.max(0, gameState.white_time - (gameState.current_turn === 'white' ? elapsedSeconds : 0));
+      const blackTimeLeft = Math.max(0, gameState.black_time - (gameState.current_turn === 'black' ? elapsedSeconds : 0));
+
+      setWhiteTime(formatTime(whiteTimeLeft));
+      setBlackTime(formatTime(blackTimeLeft));
+
+      if (whiteTimeLeft === 0 || blackTimeLeft === 0) {
+        const winner = whiteTimeLeft === 0 ? 'black' : 'white';
+        await updateGameState({
+          game_result: winner === 'white' ? '1-0' : '0-1'
+        });
+        clearInterval(timerInterval.current);
+        toast({
+          title: `Partie terminée`,
+          description: `${winner === 'white' ? 'Blancs' : 'Noirs'} gagnent au temps`,
+        });
+      }
+    }, 1000);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (timerInterval.current) {
+        clearInterval(timerInterval.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!id) {
+      navigate('/');
+      return;
+    }
+
+    const initializeGameState = async () => {
+      try {
+        const { data: existingGame, error: fetchError } = await supabase
+          .from('games')
+          .select('*')
+          .eq('id', id)
+          .maybeSingle();
+
+        if (fetchError) {
+          throw fetchError;
+        }
+
+        const channel = supabase.channel(`game:${id}`, {
+          config: {
+            broadcast: {
+              self: true
+            }
+          }
+        });
+
+        if (!existingGame) {
+          const isWhite = Math.random() < 0.5;
+          const initialState: Omit<GameState, 'id'> = {
+            players: [playerId],
+            current_turn: 'white',
+            pgn: '',
+            time_control: settings.time_control,
+            increment: settings.increment,
+            moves: [],
+            creator: playerId,
+            white_time: settings.time_control * 60,
+            black_time: settings.time_control * 60,
+            white_player: isWhite ? playerId : undefined,
+            black_player: isWhite ? undefined : playerId
+          };
+
+          const { error: insertError } = await supabase
+            .from('games')
+            .insert([{ id, ...initialState }]);
+
+          if (insertError) {
+            throw insertError;
+          }
+
+          setGameState({ id, ...initialState });
+          setPlayerColor(isWhite ? 'white' : 'black');
+          setShowSettings(true);
+          
+          setWhiteTime(formatTime(settings.time_control * 60));
+          setBlackTime(formatTime(settings.time_control * 60));
+        } else {
+          if (existingGame.players.length < 2 && !existingGame.players.includes(playerId)) {
+            const updatedPlayers = [...existingGame.players, playerId];
+            const started_at = new Date().toISOString();
+            
+            const updatedState = {
+              players: updatedPlayers,
+              started_at,
+              white_player: existingGame.white_player || (existingGame.black_player ? playerId : undefined),
+              black_player: existingGame.black_player || (existingGame.white_player ? playerId : undefined)
+            };
+
+            const { error: updateError } = await supabase
+              .from('games')
+              .update(updatedState)
+              .eq('id', id);
+
+            if (updateError) {
+              throw updateError;
+            }
+
+            setGameState({ ...existingGame, ...updatedState });
+            setPlayerColor(existingGame.white_player ? 'black' : 'white');
+            
+            setWhiteTime(formatTime(existingGame.time_control * 60));
+            setBlackTime(formatTime(existingGame.time_control * 60));
+            
+            channel.send({
+              type: 'broadcast',
+              event: 'game_state',
+              payload: { ...existingGame, ...updatedState }
+            });
+          } else {
+            setGameState(existingGame);
+            if (existingGame.white_player === playerId) {
+              setPlayerColor('white');
+            } else if (existingGame.black_player === playerId) {
+              setPlayerColor('black');
+            }
+            
+            setWhiteTime(formatTime(existingGame.time_control * 60));
+            setBlackTime(formatTime(existingGame.time_control * 60));
+          }
+
+          if (existingGame.pgn) {
+            const tempGame = new Chess();
+            tempGame.loadPgn(existingGame.pgn);
+            const history = tempGame.history({ verbose: true });
+            if (history.length > 0) {
+              const lastMoveInfo = history[history.length - 1];
+              setLastMove({ from: lastMoveInfo.from, to: lastMoveInfo.to });
+            }
+          }
+        }
+
+        channel
+          .on('broadcast', { event: 'game_state' }, ({ payload }) => {
+            setGameState(payload);
+            if (payload.pgn) {
+              const newGame = new Chess();
+              try {
+                newGame.loadPgn(payload.pgn);
+                setGame(newGame);
+                
+                const history = newGame.history({ verbose: true });
+                if (history.length > 0) {
+                  const lastMoveInfo = history[history.length - 1];
+                  setLastMove({ from: lastMoveInfo.from, to: lastMoveInfo.to });
+                }
+              } catch (error) {
+                console.error('Error loading PGN:', error);
+              }
+            }
+            
+            if (payload.players.length === 2 && payload.started_at) {
+              setShowSettings(false);
+              setIsWaiting(false);
+              startTimers();
+            }
+          })
+          .subscribe();
+
+        setIsInitialized(true);
+      } catch (error) {
+        console.error('Error initializing game:', error);
+        toast({
+          title: "Error",
+          description: "Failed to initialize game. Please try again.",
+          variant: "destructive"
+        });
+      }
+    };
+
+    initializeGameState();
+  }, [id, playerId, navigate, settings]);
+
+  useEffect(() => {
+    if (gameState?.players.length === 2) {
+      setShowSettings(false);
+      setIsWaiting(false);
+      if (gameState.started_at) {
+        startTimers();
+      }
+    } else {
+      setIsWaiting(true);
+    }
+  }, [gameState?.players, gameState?.started_at]);
+
+  const makeMove = async (move: any) => {
+    if (!gameState || isWaiting || !id) return false;
+    if (game.turn() === 'w' && playerColor !== 'white') return false;
+    if (game.turn() === 'b' && playerColor !== 'black') return false;
 
     try {
-      const move = game.move({
-        from: sourceSquare,
-        to: targetSquare,
-        promotion: 'q'
-      });
-
-      if (move) {
-        const newGameState = {
+      const newGame = new Chess(game.fen());
+      const result = newGame.move(move);
+      
+      if (result) {
+        const currentTime = new Date().getTime();
+        const startTime = gameState.started_at ? new Date(gameState.started_at).getTime() : currentTime;
+        const elapsedSeconds = Math.floor((currentTime - startTime) / 1000);
+        
+        const newState = {
           ...gameState,
-          pgn: game.pgn(),
           current_turn: game.turn() === 'w' ? 'black' : 'white',
-          moves: [...gameState.moves, `${move.from}${move.to}`]
+          pgn: newGame.pgn(),
+          moves: [...(gameState.moves || []), `${game.turn() === 'w' ? 'White' : 'Black'}: ${move.from}${move.to}`],
+          white_time: game.turn() === 'b' ? gameState.white_time + gameState.increment : gameState.white_time,
+          black_time: game.turn() === 'w' ? gameState.black_time + gameState.increment : gameState.black_time
         };
 
-        supabase.from('games').update(newGameState).eq('id', id);
-        setLastMove({ from: sourceSquare, to: targetSquare });
+        setLastMove({ from: move.from, to: move.to });
 
-        if (move.captured) {
-          CAPTURE_SOUND.play();
-        } else {
-          MOVE_SOUND.play();
+        const { error: updateError } = await supabase
+          .from('games')
+          .update(newState)
+          .eq('id', id);
+
+        if (updateError) {
+          throw updateError;
         }
 
-        if (game.isCheck()) {
-          CHECK_SOUND.play();
-        }
+        const channel = supabase.channel(`game:${id}`);
+        channel.send({
+          type: 'broadcast',
+          event: 'game_state',
+          payload: newState
+        });
 
-        if (game.isCheckmate() || game.isDraw()) {
-          GAME_END_SOUND.play();
-          setIsGameOver(true);
-        }
-
+        setGame(newGame);
         return true;
       }
     } catch (error) {
       console.error('Error making move:', error);
+      return false;
     }
     return false;
   };
 
-  const onPieceClick = () => {
-    PIECE_SELECT_SOUND.play();
+  const onDrop = (sourceSquare: string, targetSquare: string) => {
+    const move = makeMove({
+      from: sourceSquare,
+      to: targetSquare,
+      promotion: 'q'
+    });
+
+    return move;
+  };
+
+  const copyGameLink = () => {
+    const url = `${SITE_URL}/game/${id}`;
+    navigator.clipboard.writeText(url);
+    toast({
+      title: "Link copied!",
+      description: "Share this link with your opponent to start the game.",
+    });
+  };
+
+  const updateGameState = async (newState: Partial<GameState>) => {
+    if (!id || !gameState) return;
+
+    try {
+      const { error: updateError } = await supabase
+        .from('games')
+        .update(newState)
+        .eq('id', id);
+
+      if (updateError) {
+        throw updateError;
+      }
+
+      const channel = supabase.channel(`game:${id}`);
+      channel.send({
+        type: 'broadcast',
+        event: 'game_state',
+        payload: { ...gameState, ...newState }
+      });
+    } catch (error) {
+      console.error('Error updating game state:', error);
+      toast({
+        title: "Error",
+        description: "Failed to update game state. Please try again.",
+        variant: "destructive"
+      });
+    }
+  };
+
+  const offerDraw = () => {
+    if (!id || !playerColor) return;
+    updateGameState({ pending_draw_offer: playerId });
+    toast({
+      title: "Draw offered",
+      description: "Waiting for opponent's response..."
+    });
+  };
+
+  const respondToDrawOffer = (accept: boolean) => {
+    if (!id || !gameState?.pending_draw_offer) return;
+    if (accept) {
+      updateGameState({
+        pending_draw_offer: null,
+        game_result: '½-½'
+      });
+      toast({
+        title: "Game drawn by agreement",
+      });
+    } else {
+      updateGameState({ pending_draw_offer: null });
+      toast({
+        title: "Draw offer declined",
+      });
+    }
+  };
+
+  const resign = () => {
+    if (!id || !playerColor) return;
+    updateGameState({
+      game_result: playerColor === 'white' ? '0-1' : '1-0'
+    });
+    toast({
+      title: `${playerColor === 'white' ? 'Black' : 'White'} wins by resignation`,
+    });
+  };
+
+  const requestTakeback = () => {
+    if (!id || !playerColor || !gameState) return;
+    updateGameState({ pending_takeback_request: playerId });
+    toast({
+      title: "Takeback requested",
+      description: "Waiting for opponent's response..."
+    });
+  };
+
+  const respondToTakeback = (accept: boolean) => {
+    if (!id || !gameState?.pending_takeback_request || !game.history().length) return;
+    
+    if (accept) {
+      const moves = game.history();
+      moves.pop();
+      
+      const newGame = new Chess();
+      moves.forEach(move => newGame.move(move));
+      
+      const lastMove = gameState.moves[gameState.moves.length - 1];
+      const isWhiteMove = lastMove.startsWith('White');
+      
+      updateGameState({
+        pending_takeback_request: null,
+        pgn: newGame.pgn(),
+        moves: gameState.moves.slice(0, -1),
+        current_turn: isWhiteMove ? 'white' : 'black'
+      });
+      
+      setGame(newGame);
+      setLastMove(null);
+      toast({
+        title: "Takeback accepted",
+      });
+    } else {
+      updateGameState({ pending_takeback_request: null });
+      toast({
+        title: "Takeback declined",
+      });
+    }
+  };
+
+  const requestRematch = () => {
+    if (!id || !playerColor || !gameState) return;
+    const newGameId = crypto.randomUUID();
+    navigate(`/game/${newGameId}`);
   };
 
   const customSquareStyles = {
     ...(lastMove ? {
-      [lastMove.from]: { backgroundColor: 'rgba(255, 255, 0, 0.2)' },
-      [lastMove.to]: { backgroundColor: 'rgba(255, 255, 0, 0.2)' }
+      [lastMove.from]: { backgroundColor: 'rgba(255, 255, 0, 0.4)' },
+      [lastMove.to]: { backgroundColor: 'rgba(255, 255, 0, 0.4)' },
     } : {}),
-    ...(game.isCheck() ? {
-      [game.turn() === 'w' ? game.squareOf('k') : game.squareOf('K')]: {
-        backgroundColor: 'rgba(255, 0, 0, 0.3)'
-      }
-    } : {})
   };
 
-  if (!gameState && !showSettings) {
+  if (!isInitialized) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
-        <div className="text-center space-y-4">
-          <h2 className="text-2xl font-bold">Chargement de la partie...</h2>
-          <p className="text-muted-foreground">Veuillez patienter</p>
+        <div className="text-center">
+          <h2 className="text-2xl font-bold text-foreground">Initializing game...</h2>
         </div>
       </div>
     );
   }
 
-  return (
-    <div className="min-h-screen flex items-center justify-center bg-background p-4">
-      <Dialog open={showSettings} onOpenChange={setShowSettings}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Paramètres de la partie</DialogTitle>
-            <DialogDescription>
-              Configurez les paramètres de la partie avant de commencer
-            </DialogDescription>
-          </DialogHeader>
+  if (showSettings) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-background p-4">
+        <div className="w-full max-w-md p-6 bg-card rounded-lg shadow-lg">
+          <h2 className="text-2xl font-bold text-center mb-6">Game Settings</h2>
           <div className="space-y-4">
             <div className="space-y-2">
-              <label className="text-sm font-medium">Temps de réflexion (minutes)</label>
+              <label className="text-sm font-medium">Time Control (minutes)</label>
               <Select
-                value={settings.timeControl.toString()}
-                onValueChange={(value) => setSettings(s => ({ ...s, timeControl: parseInt(value) }))}
+                value={settings.time_control.toString()}
+                onValueChange={(value) => {
+                  const newTimeControl = parseInt(value);
+                  setSettings(prev => ({ ...prev, time_control: newTimeControl }));
+                  setWhiteTime(formatTime(newTimeControl * 60));
+                  setBlackTime(formatTime(newTimeControl * 60));
+                }}
               >
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="3">3 minutes</SelectItem>
-                  <SelectItem value="5">5 minutes</SelectItem>
-                  <SelectItem value="10">10 minutes</SelectItem>
-                  <SelectItem value="15">15 minutes</SelectItem>
-                  <SelectItem value="30">30 minutes</SelectItem>
+                  <SelectItem value="1">1</SelectItem>
+                  <SelectItem value="3">3</SelectItem>
+                  <SelectItem value="5">5</SelectItem>
+                  <SelectItem value="10">10</SelectItem>
+                  <SelectItem value="15">15</SelectItem>
+                  <SelectItem value="30">30</SelectItem>
                 </SelectContent>
               </Select>
             </div>
             <div className="space-y-2">
-              <label className="text-sm font-medium">Incrément (secondes)</label>
+              <label className="text-sm font-medium">Increment (seconds)</label>
               <Select
                 value={settings.increment.toString()}
-                onValueChange={(value) => setSettings(s => ({ ...s, increment: parseInt(value) }))}
+                onValueChange={(value) => setSettings(prev => ({ ...prev, increment: parseInt(value) }))}
               >
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="0">0 secondes</SelectItem>
-                  <SelectItem value="2">2 secondes</SelectItem>
-                  <SelectItem value="5">5 secondes</SelectItem>
-                  <SelectItem value="10">10 secondes</SelectItem>
+                  <SelectItem value="0">0</SelectItem>
+                  <SelectItem value="1">1</SelectItem>
+                  <SelectItem value="2">2</SelectItem>
+                  <SelectItem value="3">3</SelectItem>
+                  <SelectItem value="5">5</SelectItem>
+                  <SelectItem value="10">10</SelectItem>
                 </SelectContent>
               </Select>
             </div>
-            <Button onClick={createGame} className="w-full">
-              Créer la partie
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      <div className="w-full max-w-[1200px] flex flex-col items-center gap-4">
-        <div className="w-full flex justify-between items-center mb-4">
-          <div className="text-xl font-mono">
-            {playerColor ? `Vous jouez les ${playerColor === 'white' ? 'Blancs' : 'Noirs'}` : 'En attente d\'un adversaire'}
-          </div>
-          <div className="flex gap-2">
-            <Button variant="outline" onClick={copyGameUrl}>
-              Copier le lien
-            </Button>
-            <Button variant="outline" onClick={() => navigate('/')}>
-              Quitter
-            </Button>
+            <div className="flex justify-between pt-4">
+              <Button onClick={() => setShowSettings(false)}>
+                Start Game
+              </Button>
+              <Button onClick={copyGameLink} variant="outline">
+                Copy Game Link
+              </Button>
+            </div>
           </div>
         </div>
+      </div>
+    );
+  }
 
-        <div className="relative">
-          <Chessboard
-            position={game.fen()}
-            onPieceDrop={onDrop}
-            onPieceClick={onPieceClick}
-            boardOrientation={playerColor || 'white'}
-            customSquareStyles={customSquareStyles}
-            animationDuration={200}
-          />
+  if (isWaiting) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-background p-4">
+        <div className="text-center space-y-4">
+          <h2 className="text-2xl font-bold text-foreground">Waiting for opponent...</h2>
+          <p className="text-muted-foreground">Share this link with your opponent to start the game</p>
+          <Button onClick={copyGameLink}>Copy Game Link</Button>
         </div>
+      </div>
+    );
+  }
 
+  const isGameOver = gameState?.game_result || game.isGameOver();
+  const canOfferDraw = !isGameOver && !gameState?.pending_draw_offer;
+  const canRequestTakeback = !isGameOver && !gameState?.pending_takeback_request && gameState?.moves?.length > 0;
+  const hasDrawOffer = gameState?.pending_draw_offer && gameState.pending_draw_offer !== playerId;
+  const hasTakebackRequest = gameState?.pending_takeback_request && gameState.pending_takeback_request !== playerId;
+
+  return (
+    <div className="min-h-screen flex flex-col items-center justify-center bg-background p-4">
+      <div className="w-full max-w-[1200px] flex gap-4">
         {gameState?.moves && (
-          <div className="w-full mt-4 p-4 bg-card rounded-lg">
+          <div className="w-64 p-4 bg-card rounded-lg h-[600px]">
             <h3 className="font-medium mb-2">Historique des coups</h3>
-            <div className="max-h-32 overflow-y-auto space-y-1">
+            <div className="h-full overflow-y-auto space-y-1">
               {gameState.moves.map((move, index) => (
                 <div key={index} className="text-sm">
                   {move}
@@ -342,6 +597,103 @@ const Game = () => {
             </div>
           </div>
         )}
+
+        <div className="flex-1 space-y-4">
+          <div className="flex justify-between items-center">
+            <div>
+              <div className="flex items-center gap-4">
+                <h2 className="text-xl font-bold text-foreground">
+                  {playerColor ? `Vous jouez les ${playerColor === 'white' ? 'Blancs' : 'Noirs'}` : 'Spectateur'}
+                </h2>
+              </div>
+              <p className="text-muted-foreground">
+                {isGameOver ? (
+                  `Partie terminée - ${gameState?.game_result === '1-0' ? 'Blancs gagnent' : 
+                    gameState?.game_result === '0-1' ? 'Noirs gagnent' : 
+                    gameState?.game_result === '½-½' ? 'Partie nulle' : 
+                    'Partie terminée'}`
+                ) : (
+                  `Tour des ${game.turn() === 'w' ? "Blancs" : "Noirs"}`
+                )}
+              </p>
+            </div>
+            <div className="space-x-2">
+              {!isGameOver && playerColor && (
+                <>
+                  <Button 
+                    onClick={offerDraw} 
+                    variant="outline"
+                    disabled={!canOfferDraw}
+                  >
+                    Proposer nulle
+                  </Button>
+                  <Button 
+                    onClick={requestTakeback} 
+                    variant="outline"
+                    disabled={!canRequestTakeback}
+                  >
+                    Annuler le coup
+                  </Button>
+                  <Button 
+                    onClick={resign} 
+                    variant="destructive"
+                  >
+                    Abandonner
+                  </Button>
+                </>
+              )}
+              {isGameOver && (
+                <>
+                  <Button onClick={requestRematch}>
+                    Revanche
+                  </Button>
+                  <Button onClick={() => navigate('/')} variant="outline">
+                    Retour à l'accueil
+                  </Button>
+                </>
+              )}
+            </div>
+          </div>
+
+          <div className="flex justify-between px-4">
+            <div className={`text-lg font-mono ${game.turn() === 'w' ? 'text-primary font-bold' : ''}`}>
+              Blancs: {whiteTime.minutes}:{whiteTime.seconds.toString().padStart(2, '0')}
+            </div>
+            <div className={`text-lg font-mono ${game.turn() === 'b' ? 'text-primary font-bold' : ''}`}>
+              Noirs: {blackTime.minutes}:{blackTime.seconds.toString().padStart(2, '0')}
+            </div>
+          </div>
+
+          {(hasDrawOffer || hasTakebackRequest) && (
+            <div className="bg-muted p-4 rounded-lg">
+              <p className="font-medium">
+                {hasDrawOffer ? 'Votre adversaire propose une partie nulle' : 'Votre adversaire demande d\'annuler le dernier coup'}
+              </p>
+              <div className="mt-2 space-x-2">
+                <Button 
+                  onClick={() => hasDrawOffer ? respondToDrawOffer(true) : respondToTakeback(true)}
+                  variant="outline"
+                >
+                  Accepter
+                </Button>
+                <Button 
+                  onClick={() => hasDrawOffer ? respondToDrawOffer(false) : respondToTakeback(false)}
+                  variant="outline"
+                >
+                  Refuser
+                </Button>
+              </div>
+            </div>
+          )}
+
+          <Chessboard 
+            position={game.fen()}
+            onPieceDrop={onDrop}
+            boardOrientation={playerColor || 'white'}
+            customSquareStyles={customSquareStyles}
+            animationDuration={200}
+          />
+        </div>
       </div>
     </div>
   );
