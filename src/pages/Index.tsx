@@ -13,9 +13,9 @@ const Index = () => {
   return (
     <div className="min-h-screen flex items-center justify-center bg-background">
       <div className="text-center space-y-8">
-        <h1 className="text-4xl font-bold text-foreground">Chess Game</h1>
+        <h1 className="text-4xl font-bold text-foreground">Jeu d'Échecs</h1>
         <Button onClick={createGame} size="lg">
-          Create New Game
+          Créer une nouvelle partie
         </Button>
       </div>
     </div>

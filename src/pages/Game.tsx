@@ -30,6 +30,11 @@ interface GameState {
   started_at?: string;
   white_player?: string;
   black_player?: string;
+  score?: {
+    white: number;
+    black: number;
+    draws: number;
+  };
 }
 
 interface GameSettings {
@@ -69,6 +74,28 @@ const Game = () => {
   const [lastMove, setLastMove] = useState<{ from: string; to: string } | null>(null);
   const timerInterval = useRef<NodeJS.Timeout | null>(null);
 
+  const cleanupGame = async () => {
+    if (id) {
+      await supabase
+        .from('games')
+        .delete()
+        .eq('id', id);
+    }
+  };
+
+  useEffect(() => {
+    const handleUnload = () => {
+      cleanupGame();
+    };
+
+    window.addEventListener('beforeunload', handleUnload);
+
+    return () => {
+      window.removeEventListener('beforeunload', handleUnload);
+      cleanupGame();
+    };
+  }, [id]);
+
   const startTimers = () => {
     if (timerInterval.current) {
       clearInterval(timerInterval.current);
@@ -94,8 +121,8 @@ const Game = () => {
         });
         clearInterval(timerInterval.current);
         toast({
-          title: `Game Over`,
-          description: `${winner === 'white' ? 'White' : 'Black'} wins on time`,
+          title: `Partie terminée`,
+          description: `${winner === 'white' ? 'Blancs' : 'Noirs'} gagnent au temps`,
         });
       }
     }, 1000);
@@ -163,7 +190,6 @@ const Game = () => {
           setPlayerColor(isWhite ? 'white' : 'black');
           setShowSettings(true);
           
-          // Initialize timers with selected time control
           setWhiteTime(formatTime(settings.time_control * 60));
           setBlackTime(formatTime(settings.time_control * 60));
         } else {
@@ -190,7 +216,6 @@ const Game = () => {
             setGameState({ ...existingGame, ...updatedState });
             setPlayerColor(existingGame.white_player ? 'black' : 'white');
             
-            // Initialize timers with game's time control
             setWhiteTime(formatTime(existingGame.time_control * 60));
             setBlackTime(formatTime(existingGame.time_control * 60));
             
@@ -207,12 +232,10 @@ const Game = () => {
               setPlayerColor('black');
             }
             
-            // Initialize timers with game's time control
             setWhiteTime(formatTime(existingGame.time_control * 60));
             setBlackTime(formatTime(existingGame.time_control * 60));
           }
 
-          // Load last move for highlighting
           if (existingGame.pgn) {
             const tempGame = new Chess();
             tempGame.loadPgn(existingGame.pgn);
@@ -233,7 +256,6 @@ const Game = () => {
                 newGame.loadPgn(payload.pgn);
                 setGame(newGame);
                 
-                // Update last move for highlighting
                 const history = newGame.history({ verbose: true });
                 if (history.length > 0) {
                   const lastMoveInfo = history[history.length - 1];
@@ -456,6 +478,12 @@ const Game = () => {
     }
   };
 
+  const requestRematch = () => {
+    if (!id || !playerColor || !gameState) return;
+    const newGameId = crypto.randomUUID();
+    navigate(`/game/${newGameId}`);
+  };
+
   const customSquareStyles = {
     ...(lastMove ? {
       [lastMove.from]: { backgroundColor: 'rgba(255, 255, 0, 0.4)' },
@@ -556,94 +584,11 @@ const Game = () => {
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center bg-background p-4">
-      <div className="w-full max-w-[800px] space-y-4">
-        <div className="flex justify-between items-center">
-          <div>
-            <div className="flex items-center gap-4">
-              <h2 className="text-xl font-bold text-foreground">
-                {playerColor ? `You are playing as ${playerColor}` : 'Spectating'}
-              </h2>
-              <div className="flex gap-8">
-                <div className={`text-lg font-mono ${game.turn() === 'w' ? 'text-primary font-bold' : ''}`}>
-                  White: {whiteTime.minutes}:{whiteTime.seconds.toString().padStart(2, '0')}
-                </div>
-                <div className={`text-lg font-mono ${game.turn() === 'b' ? 'text-primary font-bold' : ''}`}>
-                  Black: {blackTime.minutes}:{blackTime.seconds.toString().padStart(2, '0')}
-                </div>
-              </div>
-            </div>
-            <p className="text-muted-foreground">
-              {isGameOver ? (
-                `Game Over - ${gameState?.game_result || game.isCheckmate() ? 
-                  (game.turn() === 'w' ? 'Black wins' : 'White wins') : 
-                  'Draw'}`
-              ) : (
-                `${game.turn() === 'w' ? "White's" : "Black's"} turn`
-              )}
-            </p>
-          </div>
-          <div className="space-x-2">
-            {!isGameOver && playerColor && (
-              <>
-                <Button 
-                  onClick={offerDraw} 
-                  variant="outline"
-                  disabled={!canOfferDraw}
-                >
-                  Offer Draw
-                </Button>
-                <Button 
-                  onClick={requestTakeback} 
-                  variant="outline"
-                  disabled={!canRequestTakeback}
-                >
-                  Request Takeback
-                </Button>
-                <Button 
-                  onClick={resign} 
-                  variant="destructive"
-                >
-                  Resign
-                </Button>
-              </>
-            )}
-          </div>
-        </div>
-
-        {(hasDrawOffer || hasTakebackRequest) && (
-          <div className="bg-muted p-4 rounded-lg">
-            <p className="font-medium">
-              {hasDrawOffer ? 'Your opponent offers a draw' : 'Your opponent requests a takeback'}
-            </p>
-            <div className="mt-2 space-x-2">
-              <Button 
-                onClick={() => hasDrawOffer ? respondToDrawOffer(true) : respondToTakeback(true)}
-                variant="outline"
-              >
-                Accept
-              </Button>
-              <Button 
-                onClick={() => hasDrawOffer ? respondToDrawOffer(false) : respondToTakeback(false)}
-                variant="outline"
-              >
-                Decline
-              </Button>
-            </div>
-          </div>
-        )}
-
-        <Chessboard 
-          position={game.fen()}
-          onPieceDrop={onDrop}
-          boardOrientation={playerColor || 'white'}
-          customSquareStyles={customSquareStyles}
-          animationDuration={200}
-        />
-
+      <div className="w-full max-w-[1200px] flex gap-4">
         {gameState?.moves && (
-          <div className="mt-4 p-4 bg-card rounded-lg">
-            <h3 className="font-medium mb-2">Move History</h3>
-            <div className="max-h-32 overflow-y-auto space-y-1">
+          <div className="w-64 p-4 bg-card rounded-lg h-[600px]">
+            <h3 className="font-medium mb-2">Historique des coups</h3>
+            <div className="h-full overflow-y-auto space-y-1">
               {gameState.moves.map((move, index) => (
                 <div key={index} className="text-sm">
                   {move}
@@ -652,6 +597,103 @@ const Game = () => {
             </div>
           </div>
         )}
+
+        <div className="flex-1 space-y-4">
+          <div className="flex justify-between items-center">
+            <div>
+              <div className="flex items-center gap-4">
+                <h2 className="text-xl font-bold text-foreground">
+                  {playerColor ? `Vous jouez les ${playerColor === 'white' ? 'Blancs' : 'Noirs'}` : 'Spectateur'}
+                </h2>
+              </div>
+              <p className="text-muted-foreground">
+                {isGameOver ? (
+                  `Partie terminée - ${gameState?.game_result === '1-0' ? 'Blancs gagnent' : 
+                    gameState?.game_result === '0-1' ? 'Noirs gagnent' : 
+                    gameState?.game_result === '½-½' ? 'Partie nulle' : 
+                    'Partie terminée'}`
+                ) : (
+                  `Tour des ${game.turn() === 'w' ? "Blancs" : "Noirs"}`
+                )}
+              </p>
+            </div>
+            <div className="space-x-2">
+              {!isGameOver && playerColor && (
+                <>
+                  <Button 
+                    onClick={offerDraw} 
+                    variant="outline"
+                    disabled={!canOfferDraw}
+                  >
+                    Proposer nulle
+                  </Button>
+                  <Button 
+                    onClick={requestTakeback} 
+                    variant="outline"
+                    disabled={!canRequestTakeback}
+                  >
+                    Annuler le coup
+                  </Button>
+                  <Button 
+                    onClick={resign} 
+                    variant="destructive"
+                  >
+                    Abandonner
+                  </Button>
+                </>
+              )}
+              {isGameOver && (
+                <>
+                  <Button onClick={requestRematch}>
+                    Revanche
+                  </Button>
+                  <Button onClick={() => navigate('/')} variant="outline">
+                    Retour à l'accueil
+                  </Button>
+                </>
+              )}
+            </div>
+          </div>
+
+          <div className="flex justify-between px-4">
+            <div className={`text-lg font-mono ${game.turn() === 'w' ? 'text-primary font-bold' : ''}`}>
+              Blancs: {whiteTime.minutes}:{whiteTime.seconds.toString().padStart(2, '0')}
+            </div>
+            <div className={`text-lg font-mono ${game.turn() === 'b' ? 'text-primary font-bold' : ''}`}>
+              Noirs: {blackTime.minutes}:{blackTime.seconds.toString().padStart(2, '0')}
+            </div>
+          </div>
+
+          {(hasDrawOffer || hasTakebackRequest) && (
+            <div className="bg-muted p-4 rounded-lg">
+              <p className="font-medium">
+                {hasDrawOffer ? 'Votre adversaire propose une partie nulle' : 'Votre adversaire demande d\'annuler le dernier coup'}
+              </p>
+              <div className="mt-2 space-x-2">
+                <Button 
+                  onClick={() => hasDrawOffer ? respondToDrawOffer(true) : respondToTakeback(true)}
+                  variant="outline"
+                >
+                  Accepter
+                </Button>
+                <Button 
+                  onClick={() => hasDrawOffer ? respondToDrawOffer(false) : respondToTakeback(false)}
+                  variant="outline"
+                >
+                  Refuser
+                </Button>
+              </div>
+            </div>
+          )}
+
+          <Chessboard 
+            position={game.fen()}
+            onPieceDrop={onDrop}
+            boardOrientation={playerColor || 'white'}
+            customSquareStyles={customSquareStyles}
+            animationDuration={200}
+          />
+        </div>
       </div>
     </div>
   );
