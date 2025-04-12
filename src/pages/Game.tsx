@@ -5,6 +5,20 @@ import { Chess } from 'chess.js';
 import { supabase } from '@/lib/supabase';
 import { Button } from '@/components/ui/button';
 import { toast } from '@/components/ui/use-toast';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 // Sound effects
 const MOVE_SOUND = new Audio('/sounds/move.mp3');
@@ -32,6 +46,11 @@ interface GameState {
   black_player?: string;
 }
 
+interface GameSettings {
+  timeControl: number;
+  increment: number;
+}
+
 const Game = () => {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -43,6 +62,54 @@ const Game = () => {
   const [blackTime, setBlackTime] = useState({ minutes: 10, seconds: 0 });
   const [isGameOver, setIsGameOver] = useState(false);
   const [playerId] = useState(() => crypto.randomUUID());
+  const [showSettings, setShowSettings] = useState(true);
+  const [settings, setSettings] = useState<GameSettings>({
+    timeControl: 10,
+    increment: 5
+  });
+  const [gameUrl, setGameUrl] = useState('');
+
+  const copyGameUrl = () => {
+    navigator.clipboard.writeText(gameUrl);
+    toast({
+      title: "Lien copié",
+      description: "Le lien de la partie a été copié dans le presse-papier"
+    });
+  };
+
+  useEffect(() => {
+    setGameUrl(`${window.location.origin}/game/${id}`);
+  }, [id]);
+
+  const createGame = async () => {
+    if (!id) return;
+
+    const newGameState = {
+      id,
+      players: [playerId],
+      creator: playerId,
+      current_turn: 'white',
+      pgn: '',
+      time_control: settings.timeControl,
+      increment: settings.increment,
+      moves: [],
+      white_time: settings.timeControl * 60,
+      black_time: settings.timeControl * 60,
+      white_player: playerId
+    };
+
+    const { error } = await supabase.from('games').insert(newGameState);
+    
+    if (!error) {
+      setGameState(newGameState);
+      setPlayerColor('white');
+      setShowSettings(false);
+      toast({
+        title: "Partie créée",
+        description: "Partagez le lien pour inviter un adversaire"
+      });
+    }
+  };
 
   useEffect(() => {
     if (!id) return;
@@ -54,41 +121,29 @@ const Game = () => {
         .eq('id', id)
         .single();
 
-      if (!existingGame) {
-        // Create new game
-        const newGameState = {
-          id,
-          players: [playerId],
-          creator: playerId,
-          current_turn: 'white',
-          pgn: '',
-          time_control: 10,
-          increment: 5,
-          moves: [],
-          white_time: 600,
-          black_time: 600,
-          white_player: playerId,
-          started_at: new Date().toISOString()
-        };
-
-        await supabase.from('games').insert(newGameState);
-        setGameState(newGameState);
-        setPlayerColor('white');
-      } else {
-        // Join existing game
+      if (existingGame) {
         if (!existingGame.black_player && existingGame.white_player !== playerId) {
           const updatedGame = {
             ...existingGame,
             black_player: playerId,
-            players: [...(existingGame.players || []), playerId]
+            players: [...(existingGame.players || []), playerId],
+            started_at: new Date().toISOString()
           };
           await supabase.from('games').update(updatedGame).eq('id', id);
           setGameState(updatedGame);
           setPlayerColor('black');
+          setShowSettings(false);
         } else {
           setGameState(existingGame);
           if (existingGame.white_player === playerId) setPlayerColor('white');
           if (existingGame.black_player === playerId) setPlayerColor('black');
+          setShowSettings(false);
+        }
+
+        if (existingGame.pgn) {
+          const loadedGame = new Chess();
+          loadedGame.loadPgn(existingGame.pgn);
+          setGame(loadedGame);
         }
       }
 
@@ -105,7 +160,6 @@ const Game = () => {
                 newGame.loadPgn(newState.pgn);
                 setGame(newGame);
                 
-                // Play appropriate sound
                 if (newGame.isCheck()) {
                   CHECK_SOUND.play();
                 } else if (newGame.history().length > game.history().length) {
@@ -147,7 +201,6 @@ const Game = () => {
         supabase.from('games').update(newGameState).eq('id', id);
         setLastMove({ from: sourceSquare, to: targetSquare });
 
-        // Play move sound
         if (move.captured) {
           CAPTURE_SOUND.play();
         } else {
@@ -187,7 +240,7 @@ const Game = () => {
     } : {})
   };
 
-  if (!gameState) {
+  if (!gameState && !showSettings) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
         <div className="text-center space-y-4">
@@ -200,9 +253,70 @@ const Game = () => {
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-background p-4">
+      <Dialog open={showSettings} onOpenChange={setShowSettings}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Paramètres de la partie</DialogTitle>
+            <DialogDescription>
+              Configurez les paramètres de la partie avant de commencer
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Temps de réflexion (minutes)</label>
+              <Select
+                value={settings.timeControl.toString()}
+                onValueChange={(value) => setSettings(s => ({ ...s, timeControl: parseInt(value) }))}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="3">3 minutes</SelectItem>
+                  <SelectItem value="5">5 minutes</SelectItem>
+                  <SelectItem value="10">10 minutes</SelectItem>
+                  <SelectItem value="15">15 minutes</SelectItem>
+                  <SelectItem value="30">30 minutes</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Incrément (secondes)</label>
+              <Select
+                value={settings.increment.toString()}
+                onValueChange={(value) => setSettings(s => ({ ...s, increment: parseInt(value) }))}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="0">0 secondes</SelectItem>
+                  <SelectItem value="2">2 secondes</SelectItem>
+                  <SelectItem value="5">5 secondes</SelectItem>
+                  <SelectItem value="10">10 secondes</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <Button onClick={createGame} className="w-full">
+              Créer la partie
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       <div className="w-full max-w-[1200px] flex flex-col items-center gap-4">
-        <div className="text-xl font-mono mb-4">
-          {playerColor ? `Vous jouez les ${playerColor === 'white' ? 'Blancs' : 'Noirs'}` : 'En attente d\'un adversaire'}
+        <div className="w-full flex justify-between items-center mb-4">
+          <div className="text-xl font-mono">
+            {playerColor ? `Vous jouez les ${playerColor === 'white' ? 'Blancs' : 'Noirs'}` : 'En attente d\'un adversaire'}
+          </div>
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={copyGameUrl}>
+              Copier le lien
+            </Button>
+            <Button variant="outline" onClick={() => navigate('/')}>
+              Quitter
+            </Button>
+          </div>
         </div>
 
         <div className="relative">
@@ -216,14 +330,18 @@ const Game = () => {
           />
         </div>
 
-        <div className="mt-4 flex gap-4">
-          <Button
-            onClick={() => navigate('/')}
-            variant="outline"
-          >
-            Quitter la partie
-          </Button>
-        </div>
+        {gameState?.moves && (
+          <div className="w-full mt-4 p-4 bg-card rounded-lg">
+            <h3 className="font-medium mb-2">Historique des coups</h3>
+            <div className="max-h-32 overflow-y-auto space-y-1">
+              {gameState.moves.map((move, index) => (
+                <div key={index} className="text-sm">
+                  {move}
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
