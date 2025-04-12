@@ -66,6 +66,7 @@ const Game = () => {
   const [isInitialized, setIsInitialized] = useState(false);
   const [whiteTime, setWhiteTime] = useState<Timer>({ minutes: 10, seconds: 0 });
   const [blackTime, setBlackTime] = useState<Timer>({ minutes: 10, seconds: 0 });
+  const [lastMove, setLastMove] = useState<{ from: string; to: string } | null>(null);
   const timerInterval = useRef<NodeJS.Timeout | null>(null);
 
   const startTimers = () => {
@@ -86,7 +87,6 @@ const Game = () => {
       setWhiteTime(formatTime(whiteTimeLeft));
       setBlackTime(formatTime(blackTimeLeft));
 
-      // Check for time out
       if (whiteTimeLeft === 0 || blackTimeLeft === 0) {
         const winner = whiteTimeLeft === 0 ? 'black' : 'white';
         await updateGameState({
@@ -136,7 +136,6 @@ const Game = () => {
         });
 
         if (!existingGame) {
-          // Randomly assign color to creator
           const isWhite = Math.random() < 0.5;
           const initialState: Omit<GameState, 'id'> = {
             players: [playerId],
@@ -163,12 +162,15 @@ const Game = () => {
           setGameState({ id, ...initialState });
           setPlayerColor(isWhite ? 'white' : 'black');
           setShowSettings(true);
+          
+          // Initialize timers with selected time control
+          setWhiteTime(formatTime(settings.time_control * 60));
+          setBlackTime(formatTime(settings.time_control * 60));
         } else {
           if (existingGame.players.length < 2 && !existingGame.players.includes(playerId)) {
             const updatedPlayers = [...existingGame.players, playerId];
             const started_at = new Date().toISOString();
             
-            // Assign the second player to the remaining color
             const updatedState = {
               players: updatedPlayers,
               started_at,
@@ -188,6 +190,10 @@ const Game = () => {
             setGameState({ ...existingGame, ...updatedState });
             setPlayerColor(existingGame.white_player ? 'black' : 'white');
             
+            // Initialize timers with game's time control
+            setWhiteTime(formatTime(existingGame.time_control * 60));
+            setBlackTime(formatTime(existingGame.time_control * 60));
+            
             channel.send({
               type: 'broadcast',
               event: 'game_state',
@@ -200,6 +206,21 @@ const Game = () => {
             } else if (existingGame.black_player === playerId) {
               setPlayerColor('black');
             }
+            
+            // Initialize timers with game's time control
+            setWhiteTime(formatTime(existingGame.time_control * 60));
+            setBlackTime(formatTime(existingGame.time_control * 60));
+          }
+
+          // Load last move for highlighting
+          if (existingGame.pgn) {
+            const tempGame = new Chess();
+            tempGame.loadPgn(existingGame.pgn);
+            const history = tempGame.history({ verbose: true });
+            if (history.length > 0) {
+              const lastMoveInfo = history[history.length - 1];
+              setLastMove({ from: lastMoveInfo.from, to: lastMoveInfo.to });
+            }
           }
         }
 
@@ -211,6 +232,13 @@ const Game = () => {
               try {
                 newGame.loadPgn(payload.pgn);
                 setGame(newGame);
+                
+                // Update last move for highlighting
+                const history = newGame.history({ verbose: true });
+                if (history.length > 0) {
+                  const lastMoveInfo = history[history.length - 1];
+                  setLastMove({ from: lastMoveInfo.from, to: lastMoveInfo.to });
+                }
               } catch (error) {
                 console.error('Error loading PGN:', error);
               }
@@ -272,6 +300,8 @@ const Game = () => {
           white_time: game.turn() === 'b' ? gameState.white_time + gameState.increment : gameState.white_time,
           black_time: game.turn() === 'w' ? gameState.black_time + gameState.increment : gameState.black_time
         };
+
+        setLastMove({ from: move.from, to: move.to });
 
         const { error: updateError } = await supabase
           .from('games')
@@ -398,7 +428,7 @@ const Game = () => {
     
     if (accept) {
       const moves = game.history();
-      moves.pop(); // Remove last move
+      moves.pop();
       
       const newGame = new Chess();
       moves.forEach(move => newGame.move(move));
@@ -414,6 +444,7 @@ const Game = () => {
       });
       
       setGame(newGame);
+      setLastMove(null);
       toast({
         title: "Takeback accepted",
       });
@@ -423,6 +454,13 @@ const Game = () => {
         title: "Takeback declined",
       });
     }
+  };
+
+  const customSquareStyles = {
+    ...(lastMove ? {
+      [lastMove.from]: { backgroundColor: 'rgba(255, 255, 0, 0.4)' },
+      [lastMove.to]: { backgroundColor: 'rgba(255, 255, 0, 0.4)' },
+    } : {}),
   };
 
   if (!isInitialized) {
@@ -445,7 +483,12 @@ const Game = () => {
               <label className="text-sm font-medium">Time Control (minutes)</label>
               <Select
                 value={settings.time_control.toString()}
-                onValueChange={(value) => setSettings(prev => ({ ...prev, time_control: parseInt(value) }))}
+                onValueChange={(value) => {
+                  const newTimeControl = parseInt(value);
+                  setSettings(prev => ({ ...prev, time_control: newTimeControl }));
+                  setWhiteTime(formatTime(newTimeControl * 60));
+                  setBlackTime(formatTime(newTimeControl * 60));
+                }}
               >
                 <SelectTrigger>
                   <SelectValue />
@@ -592,7 +635,9 @@ const Game = () => {
         <Chessboard 
           position={game.fen()}
           onPieceDrop={onDrop}
-          orientation={playerColor || 'white'}
+          boardOrientation={playerColor || 'white'}
+          customSquareStyles={customSquareStyles}
+          animationDuration={200}
         />
 
         {gameState?.moves && (
