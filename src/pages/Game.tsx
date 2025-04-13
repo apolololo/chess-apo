@@ -79,13 +79,20 @@ const Game = () => {
 
   useEffect(() => {
     const updateBoardSize = () => {
-      const container = document.querySelector('.board-container');
-      if (container) {
-        const width = container.clientWidth;
-        const height = window.innerHeight - 200;
-        const size = Math.min(width, height);
-        setBoardWidth(size);
-      }
+      const windowWidth = window.innerWidth;
+      const windowHeight = window.innerHeight;
+      const sidebarWidth = 300; // Width of the right sidebar
+      const padding = 32; // Total horizontal padding
+      const timerHeight = 80; // Total height for timers (top and bottom)
+      
+      // Calculate available space
+      const availableWidth = windowWidth - sidebarWidth - padding;
+      const availableHeight = windowHeight - timerHeight;
+      
+      // Use the smaller dimension to maintain square aspect ratio
+      const size = Math.min(availableWidth, availableHeight);
+      
+      setBoardWidth(size);
     };
 
     window.addEventListener('resize', updateBoardSize);
