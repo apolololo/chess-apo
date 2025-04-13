@@ -5,6 +5,7 @@ import { Chess } from 'chess.js';
 import { supabase } from '@/lib/supabase';
 import { Button } from '@/components/ui/button';
 import { toast } from '@/components/ui/use-toast';
+import { useChessSounds } from '@/hooks/use-chess-sounds';
 import {
   Select,
   SelectContent,
@@ -67,12 +68,31 @@ const Game = () => {
     time_control: 10,
     increment: 5,
   });
-  const [showSettings, setShowSettings] = useState(false);
+  const [showSettings, setShowSettings] = useState(true);
   const [isInitialized, setIsInitialized] = useState(false);
   const [whiteTime, setWhiteTime] = useState<Timer>({ minutes: 10, seconds: 0 });
   const [blackTime, setBlackTime] = useState<Timer>({ minutes: 10, seconds: 0 });
   const [lastMove, setLastMove] = useState<{ from: string; to: string } | null>(null);
   const timerInterval = useRef<NodeJS.Timeout | null>(null);
+  const { playMove, playCapture, playGameEnd, playNotify } = useChessSounds();
+  const [boardWidth, setBoardWidth] = useState(560);
+
+  useEffect(() => {
+    const updateBoardSize = () => {
+      const container = document.querySelector('.board-container');
+      if (container) {
+        const width = container.clientWidth;
+        const height = window.innerHeight - 200;
+        const size = Math.min(width, height);
+        setBoardWidth(size);
+      }
+    };
+
+    window.addEventListener('resize', updateBoardSize);
+    updateBoardSize();
+
+    return () => window.removeEventListener('resize', updateBoardSize);
+  }, []);
 
   const cleanupGame = async () => {
     if (id) {
@@ -310,6 +330,12 @@ const Game = () => {
       const result = newGame.move(move);
       
       if (result) {
+        if (result.captured) {
+          playCapture();
+        } else {
+          playMove();
+        }
+
         const currentTime = new Date().getTime();
         const startTime = gameState.started_at ? new Date(gameState.started_at).getTime() : currentTime;
         const elapsedSeconds = Math.floor((currentTime - startTime) / 1000);
@@ -342,6 +368,11 @@ const Game = () => {
         });
 
         setGame(newGame);
+
+        if (newGame.isGameOver()) {
+          playGameEnd();
+        }
+
         return true;
       }
     } catch (error) {
@@ -583,85 +614,60 @@ const Game = () => {
   const hasTakebackRequest = gameState?.pending_takeback_request && gameState.pending_takeback_request !== playerId;
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-background p-4">
-      <div className="w-full max-w-[1200px] flex gap-4">
-        {gameState?.moves && (
-          <div className="w-64 p-4 bg-card rounded-lg h-[600px]">
-            <h3 className="font-medium mb-2">Historique des coups</h3>
-            <div className="h-full overflow-y-auto space-y-1">
-              {gameState.moves.map((move, index) => (
-                <div key={index} className="text-sm">
-                  {move}
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        <div className="flex-1 space-y-4">
-          <div className="flex justify-between items-center">
-            <div>
-              <div className="flex items-center gap-4">
-                <h2 className="text-xl font-bold text-foreground">
-                  {playerColor ? `Vous jouez les ${playerColor === 'white' ? 'Blancs' : 'Noirs'}` : 'Spectateur'}
-                </h2>
+    <div className="min-h-screen flex items-center justify-center bg-background p-4">
+      <div className="w-full max-w-[1400px] flex gap-4">
+        <div className="flex-1 flex flex-col items-center">
+          <div className="text-lg font-mono mb-4">
+            {playerColor === 'black' ? (
+              <div className={game.turn() === 'w' ? 'text-primary font-bold' : ''}>
+                Blancs: {whiteTime.minutes}:{whiteTime.seconds.toString().padStart(2, '0')}
               </div>
-              <p className="text-muted-foreground">
-                {isGameOver ? (
-                  `Partie terminée - ${gameState?.game_result === '1-0' ? 'Blancs gagnent' : 
-                    gameState?.game_result === '0-1' ? 'Noirs gagnent' : 
-                    gameState?.game_result === '½-½' ? 'Partie nulle' : 
-                    'Partie terminée'}`
-                ) : (
-                  `Tour des ${game.turn() === 'w' ? "Blancs" : "Noirs"}`
-                )}
-              </p>
-            </div>
-            <div className="space-x-2">
-              {!isGameOver && playerColor && (
-                <>
-                  <Button 
-                    onClick={offerDraw} 
-                    variant="outline"
-                    disabled={!canOfferDraw}
-                  >
-                    Proposer nulle
-                  </Button>
-                  <Button 
-                    onClick={requestTakeback} 
-                    variant="outline"
-                    disabled={!canRequestTakeback}
-                  >
-                    Annuler le coup
-                  </Button>
-                  <Button 
-                    onClick={resign} 
-                    variant="destructive"
-                  >
-                    Abandonner
-                  </Button>
-                </>
-              )}
-              {isGameOver && (
-                <>
-                  <Button onClick={requestRematch}>
-                    Revanche
-                  </Button>
-                  <Button onClick={() => navigate('/')} variant="outline">
-                    Retour à l'accueil
-                  </Button>
-                </>
-              )}
-            </div>
+            ) : (
+              <div className={game.turn() === 'b' ? 'text-primary font-bold' : ''}>
+                Noirs: {blackTime.minutes}:{blackTime.seconds.toString().padStart(2, '0')}
+              </div>
+            )}
           </div>
 
-          <div className="flex justify-between px-4">
-            <div className={`text-lg font-mono ${game.turn() === 'w' ? 'text-primary font-bold' : ''}`}>
-              Blancs: {whiteTime.minutes}:{whiteTime.seconds.toString().padStart(2, '0')}
-            </div>
-            <div className={`text-lg font-mono ${game.turn() === 'b' ? 'text-primary font-bold' : ''}`}>
-              Noirs: {blackTime.minutes}:{blackTime.seconds.toString().padStart(2, '0')}
-            </div>
+          <div className="board-container relative">
+            <Chessboard 
+              position={game.fen()}
+              onPieceDrop={onDrop}
+              boardOrientation={playerColor || 'white'}
+              customSquareStyles={customSquareStyles}
+              animationDuration={200}
+              boardWidth={boardWidth}
+            />
+          </div>
+
+          <div className="text-lg font-mono mt-4">
+            {playerColor === 'black' ? (
+              <div className={game.turn() === 'b' ? 'text-primary font-bold' : ''}>
+                Noirs: {blackTime.minutes}:{blackTime.seconds.toString().padStart(2, '0')}
+              </div>
+            ) : (
+              <div className={game.turn() === 'w' ? 'text-primary font-bold' : ''}>
+                Blancs: {whiteTime.minutes}:{whiteTime.seconds.toString().padStart(2, '0')}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="w-64 flex flex-col gap-4">
+          <div className="bg-card rounded-lg p-4">
+            <h2 className="text-xl font-bold text-foreground mb-2">
+              {playerColor ? `Vous jouez les ${playerColor === 'white' ? 'Blancs' : 'Noirs'}` : 'Spectateur'}
+            </h2>
+            <p className="text-muted-foreground">
+              {isGameOver ? (
+                `Partie terminée - ${gameState?.game_result === '1-0' ? 'Blancs gagnent' : 
+                  gameState?.game_result === '0-1' ? 'Noirs gagnent' : 
+                  gameState?.game_result === '½-½' ? 'Partie nulle' : 
+                  'Partie terminée'}`
+              ) : (
+                `Tour des ${game.turn() === 'w' ? "Blancs" : "Noirs"}`
+              )}
+            </p>
           </div>
 
           {(hasDrawOffer || hasTakebackRequest) && (
@@ -686,13 +692,58 @@ const Game = () => {
             </div>
           )}
 
-          <Chessboard 
-            position={game.fen()}
-            onPieceDrop={onDrop}
-            boardOrientation={playerColor || 'white'}
-            customSquareStyles={customSquareStyles}
-            animationDuration={200}
-          />
+          <div className="space-y-2">
+            {!isGameOver && playerColor && (
+              <>
+                <Button 
+                  onClick={offerDraw} 
+                  variant="outline"
+                  disabled={!canOfferDraw}
+                  className="w-full"
+                >
+                  Proposer nulle
+                </Button>
+                <Button 
+                  onClick={requestTakeback} 
+                  variant="outline"
+                  disabled={!canRequestTakeback}
+                  className="w-full"
+                >
+                  Annuler le coup
+                </Button>
+                <Button 
+                  onClick={resign} 
+                  variant="destructive"
+                  className="w-full"
+                >
+                  Abandonner
+                </Button>
+              </>
+            )}
+            {isGameOver && (
+              <>
+                <Button onClick={requestRematch} className="w-full">
+                  Revanche
+                </Button>
+                <Button onClick={() => navigate('/')} variant="outline" className="w-full">
+                  Retour à l'accueil
+                </Button>
+              </>
+            )}
+          </div>
+
+          {gameState?.moves && (
+            <div className="bg-card rounded-lg flex-1">
+              <h3 className="font-medium p-4 pb-2">Historique des coups</h3>
+              <div className="px-4 pb-4 h-[calc(100%-3rem)] overflow-y-auto space-y-1">
+                {gameState.moves.map((move, index) => (
+                  <div key={index} className="text-sm">
+                    {move}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
