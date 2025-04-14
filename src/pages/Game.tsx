@@ -1,18 +1,11 @@
 import { useEffect, useState, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { Chessboard } from 'react-chessboard';
 import { Chess } from 'chess.js';
 import { supabase } from '@/lib/supabase';
 import { Button } from '@/components/ui/button';
 import { toast } from '@/components/ui/use-toast';
 import { useChessSounds } from '@/hooks/use-chess-sounds';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 
 interface GameState {
   id: string;
@@ -59,19 +52,16 @@ const formatTime = (totalSeconds: number): Timer => {
 const Game = () => {
   const { id } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const [game, setGame] = useState(new Chess());
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [playerId] = useState(() => crypto.randomUUID());
   const [isWaiting, setIsWaiting] = useState(true);
   const [playerColor, setPlayerColor] = useState<'white' | 'black' | null>(null);
-  const [settings, setSettings] = useState<GameSettings>({
-    time_control: 10,
-    increment: 5,
-  });
-  const [showSettings, setShowSettings] = useState(true);
+  const [settings] = useState<GameSettings>(location.state || { time_control: 10, increment: 5 });
   const [isInitialized, setIsInitialized] = useState(false);
-  const [whiteTime, setWhiteTime] = useState<Timer>({ minutes: 10, seconds: 0 });
-  const [blackTime, setBlackTime] = useState<Timer>({ minutes: 10, seconds: 0 });
+  const [whiteTime, setWhiteTime] = useState<Timer>({ minutes: settings.time_control, seconds: 0 });
+  const [blackTime, setBlackTime] = useState<Timer>({ minutes: settings.time_control, seconds: 0 });
   const [lastMove, setLastMove] = useState<{ from: string; to: string } | null>(null);
   const timerInterval = useRef<NodeJS.Timeout | null>(null);
   const { playMove, playCapture, playGameEnd, playNotify } = useChessSounds();
@@ -81,15 +71,13 @@ const Game = () => {
     const updateBoardSize = () => {
       const windowWidth = window.innerWidth;
       const windowHeight = window.innerHeight;
-      const sidebarWidth = 300; // Width of the right sidebar
-      const padding = 32; // Total horizontal padding
-      const timerHeight = 80; // Total height for timers (top and bottom)
+      const sidebarWidth = 300;
+      const padding = 32;
+      const timerHeight = 80;
       
-      // Calculate available space
       const availableWidth = windowWidth - sidebarWidth - padding;
       const availableHeight = windowHeight - timerHeight;
       
-      // Use the smaller dimension to maintain square aspect ratio
       const size = Math.min(availableWidth, availableHeight);
       
       setBoardWidth(size);
@@ -215,7 +203,6 @@ const Game = () => {
 
           setGameState({ id, ...initialState });
           setPlayerColor(isWhite ? 'white' : 'black');
-          setShowSettings(true);
           
           setWhiteTime(formatTime(settings.time_control * 60));
           setBlackTime(formatTime(settings.time_control * 60));
@@ -294,7 +281,6 @@ const Game = () => {
             }
             
             if (payload.players.length === 2 && payload.started_at) {
-              setShowSettings(false);
               setIsWaiting(false);
               startTimers();
             }
@@ -317,7 +303,6 @@ const Game = () => {
 
   useEffect(() => {
     if (gameState?.players.length === 2) {
-      setShowSettings(false);
       setIsWaiting(false);
       if (gameState.started_at) {
         startTimers();
@@ -534,69 +519,6 @@ const Game = () => {
       <div className="min-h-screen flex items-center justify-center bg-background">
         <div className="text-center">
           <h2 className="text-2xl font-bold text-foreground">Initializing game...</h2>
-        </div>
-      </div>
-    );
-  }
-
-  if (showSettings) {
-    return (
-      <div className="min-h-screen flex flex-col items-center justify-center bg-background p-4">
-        <div className="w-full max-w-md p-6 bg-card rounded-lg shadow-lg">
-          <h2 className="text-2xl font-bold text-center mb-6">Game Settings</h2>
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Time Control (minutes)</label>
-              <Select
-                value={settings.time_control.toString()}
-                onValueChange={(value) => {
-                  const newTimeControl = parseInt(value);
-                  setSettings(prev => ({ ...prev, time_control: newTimeControl }));
-                  setWhiteTime(formatTime(newTimeControl * 60));
-                  setBlackTime(formatTime(newTimeControl * 60));
-                }}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="1">1</SelectItem>
-                  <SelectItem value="3">3</SelectItem>
-                  <SelectItem value="5">5</SelectItem>
-                  <SelectItem value="10">10</SelectItem>
-                  <SelectItem value="15">15</SelectItem>
-                  <SelectItem value="30">30</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Increment (seconds)</label>
-              <Select
-                value={settings.increment.toString()}
-                onValueChange={(value) => setSettings(prev => ({ ...prev, increment: parseInt(value) }))}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="0">0</SelectItem>
-                  <SelectItem value="1">1</SelectItem>
-                  <SelectItem value="2">2</SelectItem>
-                  <SelectItem value="3">3</SelectItem>
-                  <SelectItem value="5">5</SelectItem>
-                  <SelectItem value="10">10</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="flex justify-between pt-4">
-              <Button onClick={() => setShowSettings(false)}>
-                Start Game
-              </Button>
-              <Button onClick={copyGameLink} variant="outline">
-                Copy Game Link
-              </Button>
-            </div>
-          </div>
         </div>
       </div>
     );
