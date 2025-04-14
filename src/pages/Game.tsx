@@ -29,6 +29,7 @@ interface GameState {
     black: number;
     draws: number;
   };
+  last_move_time?: string;
 }
 
 interface GameSettings {
@@ -120,19 +121,25 @@ const Game = () => {
       if (!gameState || gameState.game_result) return;
 
       const currentTime = new Date().getTime();
-      const startTime = gameState.started_at ? new Date(gameState.started_at).getTime() : currentTime;
-      const elapsedSeconds = Math.floor((currentTime - startTime) / 1000);
+      const lastMoveTime = gameState.last_move_time ? new Date(gameState.last_move_time).getTime() : currentTime;
+      const elapsedSeconds = Math.floor((currentTime - lastMoveTime) / 1000);
 
-      const whiteTimeLeft = Math.max(0, gameState.white_time - (gameState.current_turn === 'white' ? elapsedSeconds : 0));
-      const blackTimeLeft = Math.max(0, gameState.black_time - (gameState.current_turn === 'black' ? elapsedSeconds : 0));
+      if (gameState.current_turn === 'white') {
+        setWhiteTime(formatTime(gameState.white_time - elapsedSeconds));
+        setBlackTime(formatTime(gameState.black_time));
+      } else {
+        setWhiteTime(formatTime(gameState.white_time));
+        setBlackTime(formatTime(gameState.black_time - elapsedSeconds));
+      }
 
-      setWhiteTime(formatTime(whiteTimeLeft));
-      setBlackTime(formatTime(blackTimeLeft));
+      const activeTime = gameState.current_turn === 'white' ? gameState.white_time - elapsedSeconds : gameState.black_time - elapsedSeconds;
 
-      if (whiteTimeLeft === 0 || blackTimeLeft === 0) {
-        const winner = whiteTimeLeft === 0 ? 'black' : 'white';
+      if (activeTime <= 0) {
+        const winner = gameState.current_turn === 'white' ? 'black' : 'white';
         await updateGameState({
-          game_result: winner === 'white' ? '1-0' : '0-1'
+          game_result: winner === 'white' ? '1-0' : '0-1',
+          white_time: gameState.current_turn === 'white' ? 0 : gameState.white_time,
+          black_time: gameState.current_turn === 'black' ? 0 : gameState.black_time,
         });
         clearInterval(timerInterval.current);
         toast({
@@ -190,7 +197,8 @@ const Game = () => {
             white_time: settings.time_control * 60,
             black_time: settings.time_control * 60,
             white_player: isWhite ? playerId : undefined,
-            black_player: isWhite ? undefined : playerId
+            black_player: isWhite ? undefined : playerId,
+            last_move_time: new Date().toISOString()
           };
 
           const { error: insertError } = await supabase
@@ -215,7 +223,8 @@ const Game = () => {
               players: updatedPlayers,
               started_at,
               white_player: existingGame.white_player || (existingGame.black_player ? playerId : undefined),
-              black_player: existingGame.black_player || (existingGame.white_player ? playerId : undefined)
+              black_player: existingGame.black_player || (existingGame.white_player ? playerId : undefined),
+              last_move_time: new Date().toISOString()
             };
 
             const { error: updateError } = await supabase
@@ -230,8 +239,8 @@ const Game = () => {
             setGameState({ ...existingGame, ...updatedState });
             setPlayerColor(existingGame.white_player ? 'black' : 'white');
             
-            setWhiteTime(formatTime(existingGame.time_control * 60));
-            setBlackTime(formatTime(existingGame.time_control * 60));
+            setWhiteTime(formatTime(existingGame.white_time));
+            setBlackTime(formatTime(existingGame.black_time));
             
             channel.send({
               type: 'broadcast',
@@ -246,8 +255,8 @@ const Game = () => {
               setPlayerColor('black');
             }
             
-            setWhiteTime(formatTime(existingGame.time_control * 60));
-            setBlackTime(formatTime(existingGame.time_control * 60));
+            setWhiteTime(formatTime(existingGame.white_time));
+            setBlackTime(formatTime(existingGame.black_time));
           }
 
           if (existingGame.pgn) {
@@ -329,16 +338,21 @@ const Game = () => {
         }
 
         const currentTime = new Date().getTime();
-        const startTime = gameState.started_at ? new Date(gameState.started_at).getTime() : currentTime;
-        const elapsedSeconds = Math.floor((currentTime - startTime) / 1000);
+        const lastMoveTime = gameState.last_move_time ? new Date(gameState.last_move_time).getTime() : currentTime;
+        const elapsedSeconds = Math.floor((currentTime - lastMoveTime) / 1000);
         
         const newState = {
           ...gameState,
           current_turn: game.turn() === 'w' ? 'black' : 'white',
           pgn: newGame.pgn(),
           moves: [...(gameState.moves || []), `${game.turn() === 'w' ? 'White' : 'Black'}: ${move.from}${move.to}`],
-          white_time: game.turn() === 'b' ? gameState.white_time + gameState.increment : gameState.white_time,
-          black_time: game.turn() === 'w' ? gameState.black_time + gameState.increment : gameState.black_time
+          white_time: game.turn() === 'b' ? 
+            gameState.white_time - (gameState.current_turn === 'white' ? elapsedSeconds : 0) + gameState.increment : 
+            gameState.white_time,
+          black_time: game.turn() === 'w' ? 
+            gameState.black_time - (gameState.current_turn === 'black' ? elapsedSeconds : 0) + gameState.increment : 
+            gameState.black_time,
+          last_move_time: new Date().toISOString()
         };
 
         setLastMove({ from: move.from, to: move.to });
@@ -485,7 +499,8 @@ const Game = () => {
         pending_takeback_request: null,
         pgn: newGame.pgn(),
         moves: gameState.moves.slice(0, -1),
-        current_turn: isWhiteMove ? 'white' : 'black'
+        current_turn: isWhiteMove ? 'white' : 'black',
+        last_move_time: new Date().toISOString()
       });
       
       setGame(newGame);
