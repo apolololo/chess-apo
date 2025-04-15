@@ -92,11 +92,15 @@ const Game = () => {
   }, []);
 
   const cleanupGame = async () => {
-    if (id) {
-      await supabase
-        .from('games')
-        .delete()
-        .eq('id', id);
+    if (id && gameState?.creator === playerId) {
+      try {
+        await supabase
+          .from('games')
+          .delete()
+          .eq('id', id);
+      } catch (error) {
+        console.error('Error cleaning up game:', error);
+      }
     }
   };
 
@@ -111,7 +115,7 @@ const Game = () => {
       window.removeEventListener('beforeunload', handleUnload);
       cleanupGame();
     };
-  }, [id]);
+  }, [id, gameState?.creator, playerId]);
 
   const startTimers = () => {
     if (timerInterval.current) {
@@ -126,27 +130,29 @@ const Game = () => {
       const elapsedSeconds = Math.floor((currentTime - lastMoveTime) / 1000);
 
       if (gameState.current_turn === 'white') {
-        setWhiteTime(formatTime(gameState.white_time - elapsedSeconds));
+        const newWhiteTime = Math.max(0, gameState.white_time - elapsedSeconds);
+        setWhiteTime(formatTime(newWhiteTime));
         setBlackTime(formatTime(gameState.black_time));
+
+        if (newWhiteTime <= 0) {
+          await updateGameState({
+            game_result: '0-1',
+            white_time: 0,
+            black_time: gameState.black_time
+          });
+        }
       } else {
+        const newBlackTime = Math.max(0, gameState.black_time - elapsedSeconds);
         setWhiteTime(formatTime(gameState.white_time));
-        setBlackTime(formatTime(gameState.black_time - elapsedSeconds));
-      }
+        setBlackTime(formatTime(newBlackTime));
 
-      const activeTime = gameState.current_turn === 'white' ? gameState.white_time - elapsedSeconds : gameState.black_time - elapsedSeconds;
-
-      if (activeTime <= 0) {
-        const winner = gameState.current_turn === 'white' ? 'black' : 'white';
-        await updateGameState({
-          game_result: winner === 'white' ? '1-0' : '0-1',
-          white_time: gameState.current_turn === 'white' ? 0 : gameState.white_time,
-          black_time: gameState.current_turn === 'black' ? 0 : gameState.black_time,
-        });
-        clearInterval(timerInterval.current);
-        toast({
-          title: `Partie terminée`,
-          description: `${winner === 'white' ? 'Blancs' : 'Noirs'} gagnent au temps`,
-        });
+        if (newBlackTime <= 0) {
+          await updateGameState({
+            game_result: '1-0',
+            white_time: gameState.white_time,
+            black_time: 0
+          });
+        }
       }
     }, 1000);
   };
@@ -187,7 +193,8 @@ const Game = () => {
 
         if (!existingGame) {
           const isWhite = Math.random() < 0.5;
-          const initialState: Omit<GameState, 'id'> = {
+          const initialState: Partial<GameState> = {
+            id,
             players: [playerId],
             current_turn: 'white',
             pgn: '',
@@ -204,15 +211,14 @@ const Game = () => {
 
           const { error: insertError } = await supabase
             .from('games')
-            .insert([{ id, ...initialState }]);
+            .insert([initialState]);
 
           if (insertError) {
             throw insertError;
           }
 
-          setGameState({ id, ...initialState });
+          setGameState(initialState as GameState);
           setPlayerColor(isWhite ? 'white' : 'black');
-          
           setWhiteTime(formatTime(settings.time_control * 60));
           setBlackTime(formatTime(settings.time_control * 60));
         } else {
@@ -225,7 +231,7 @@ const Game = () => {
               started_at,
               white_player: existingGame.white_player || (existingGame.black_player ? playerId : undefined),
               black_player: existingGame.black_player || (existingGame.white_player ? playerId : undefined),
-              last_move_time: new Date().toISOString()
+              last_move_time: started_at
             };
 
             const { error: updateError } = await supabase
@@ -239,7 +245,6 @@ const Game = () => {
 
             setGameState({ ...existingGame, ...updatedState });
             setPlayerColor(existingGame.white_player ? 'black' : 'white');
-            
             setWhiteTime(formatTime(existingGame.white_time));
             setBlackTime(formatTime(existingGame.black_time));
             
@@ -250,23 +255,33 @@ const Game = () => {
             });
           } else {
             setGameState(existingGame);
-            if (existingGame.white_player === playerId) {
-              setPlayerColor('white');
-            } else if (existingGame.black_player === playerId) {
-              setPlayerColor('black');
-            }
-            
+            setPlayerColor(
+              existingGame.white_player === playerId ? 'white' :
+              existingGame.black_player === playerId ? 'black' :
+              null
+            );
             setWhiteTime(formatTime(existingGame.white_time));
             setBlackTime(formatTime(existingGame.black_time));
           }
 
           if (existingGame.pgn) {
             const tempGame = new Chess();
-            tempGame.loadPgn(existingGame.pgn);
-            const history = tempGame.history({ verbose: true });
-            if (history.length > 0) {
-              const lastMoveInfo = history[history.length - 1];
-              setLastMove({ from: lastMoveInfo.from, to: lastMoveInfo.to });
+            try {
+              tempGame.loadPgn(existingGame.pgn);
+              setGame(tempGame);
+              
+              const history = tempGame.history({ verbose: true });
+              if (history.length > 0) {
+                const lastMoveInfo = history[history.length - 1];
+                setLastMove({ from: lastMoveInfo.from, to: lastMoveInfo.to });
+              }
+            } catch (error) {
+              console.error('Error loading PGN:', error);
+              toast({
+                title: "Error",
+                description: "Failed to load game state",
+                variant: "destructive"
+              });
             }
           }
         }
@@ -287,6 +302,11 @@ const Game = () => {
                 }
               } catch (error) {
                 console.error('Error loading PGN:', error);
+                toast({
+                  title: "Error",
+                  description: "Failed to sync game state",
+                  variant: "destructive"
+                });
               }
             }
             
@@ -305,11 +325,12 @@ const Game = () => {
           description: "Failed to initialize game. Please try again.",
           variant: "destructive"
         });
+        navigate('/');
       }
     };
 
     initializeGameState();
-  }, [id, playerId, navigate, settings]);
+  }, [id, playerId, navigate, settings.time_control, settings.increment]);
 
   useEffect(() => {
     if (gameState?.players.length === 2) {
@@ -320,7 +341,7 @@ const Game = () => {
     } else {
       setIsWaiting(true);
     }
-  }, [gameState?.players, gameState?.started_at]);
+  }, [gameState?.players.length, gameState?.started_at]);
 
   const makeMove = async (move: any) => {
     if (!gameState || isWaiting || !id) return false;
@@ -343,15 +364,14 @@ const Game = () => {
         const elapsedSeconds = Math.floor((currentTime - lastMoveTime) / 1000);
         
         const newState = {
-          ...gameState,
           current_turn: game.turn() === 'w' ? 'black' : 'white',
           pgn: newGame.pgn(),
           moves: [...(gameState.moves || []), `${game.turn() === 'w' ? 'White' : 'Black'}: ${move.from}${move.to}`],
           white_time: game.turn() === 'b' ? 
-            gameState.white_time - (gameState.current_turn === 'white' ? elapsedSeconds : 0) + gameState.increment : 
+            Math.max(0, gameState.white_time - (gameState.current_turn === 'white' ? elapsedSeconds : 0) + gameState.increment) : 
             gameState.white_time,
           black_time: game.turn() === 'w' ? 
-            gameState.black_time - (gameState.current_turn === 'black' ? elapsedSeconds : 0) + gameState.increment : 
+            Math.max(0, gameState.black_time - (gameState.current_turn === 'black' ? elapsedSeconds : 0) + gameState.increment) : 
             gameState.black_time,
           last_move_time: new Date().toISOString()
         };
@@ -371,19 +391,29 @@ const Game = () => {
         channel.send({
           type: 'broadcast',
           event: 'game_state',
-          payload: newState
+          payload: { ...gameState, ...newState }
         });
 
         setGame(newGame);
 
         if (newGame.isGameOver()) {
           playGameEnd();
+          let result = '½-½';
+          if (newGame.isCheckmate()) {
+            result = game.turn() === 'w' ? '0-1' : '1-0';
+          }
+          await updateGameState({ game_result: result });
         }
 
         return true;
       }
     } catch (error) {
       console.error('Error making move:', error);
+      toast({
+        title: "Error",
+        description: "Failed to make move. Please try again.",
+        variant: "destructive"
+      });
       return false;
     }
     return false;
@@ -520,7 +550,10 @@ const Game = () => {
   const requestRematch = () => {
     if (!id || !playerColor || !gameState) return;
     const newGameId = crypto.randomUUID();
-    navigate(`/game/${newGameId}`);
+    navigate(`/game/${newGameId}`, { state: { 
+      time_control: gameState.time_control,
+      increment: gameState.increment
+    }});
   };
 
   const customSquareStyles = {
