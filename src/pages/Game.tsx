@@ -4,7 +4,7 @@ import { Chessboard } from 'react-chessboard';
 import { Chess } from 'chess.js';
 import { supabase } from '@/lib/supabase';
 import { Button } from '@/components/ui/button';
-import { toast } from '@/components/ui/toast';
+import { useToast } from '@/hooks/use-toast';
 import { useChessSounds } from '@/hooks/use-chess-sounds';
 
 interface GameState {
@@ -67,29 +67,7 @@ const Game = () => {
   const timerInterval = useRef<NodeJS.Timeout | null>(null);
   const { playMove, playCapture, playGameEnd, playNotify } = useChessSounds();
   const [boardWidth, setBoardWidth] = useState(560);
-  const [isConnecting, setIsConnecting] = useState(true);
-
-  useEffect(() => {
-    // Test connection to Supabase
-    const testConnection = async () => {
-      try {
-        setIsConnecting(true);
-        const { error } = await supabase.from('games').select('*', { count: 'exact', head: true });
-        if (error) throw error;
-        setIsConnecting(false);
-      } catch (error) {
-        console.error('Failed to connect to Supabase:', error);
-        toast({
-          title: "Erreur de connexion",
-          description: "Impossible de se connecter au serveur. Veuillez réessayer.",
-          variant: "destructive"
-        });
-        navigate('/');
-      }
-    };
-
-    testConnection();
-  }, [navigate]);
+  const { toast } = useToast();
 
   useEffect(() => {
     const updateBoardSize = () => {
@@ -182,14 +160,13 @@ const Game = () => {
   }, []);
 
   useEffect(() => {
-    if (!id || isConnecting) {
+    if (!id) {
+      navigate('/');
       return;
     }
 
     const initializeGameState = async () => {
       try {
-        console.log('Initializing game state...');
-        
         const { data: existingGame, error: fetchError } = await supabase
           .from('games')
           .select('*')
@@ -197,11 +174,8 @@ const Game = () => {
           .maybeSingle();
 
         if (fetchError) {
-          console.error('Error fetching game:', fetchError);
           throw fetchError;
         }
-
-        console.log('Existing game:', existingGame);
 
         const channel = supabase.channel(`game:${id}`, {
           config: {
@@ -212,7 +186,6 @@ const Game = () => {
         });
 
         if (!existingGame) {
-          console.log('Creating new game...');
           const isWhite = Math.random() < 0.5;
           const initialState: Omit<GameState, 'id'> = {
             players: [playerId],
@@ -234,18 +207,15 @@ const Game = () => {
             .insert([{ id, ...initialState }]);
 
           if (insertError) {
-            console.error('Error creating game:', insertError);
             throw insertError;
           }
 
-          console.log('Game created successfully');
           setGameState({ id, ...initialState });
           setPlayerColor(isWhite ? 'white' : 'black');
           
           setWhiteTime(formatTime(settings.time_control * 60));
           setBlackTime(formatTime(settings.time_control * 60));
         } else {
-          console.log('Joining existing game...');
           if (existingGame.players.length < 2 && !existingGame.players.includes(playerId)) {
             const updatedPlayers = [...existingGame.players, playerId];
             const started_at = new Date().toISOString();
@@ -264,11 +234,9 @@ const Game = () => {
               .eq('id', id);
 
             if (updateError) {
-              console.error('Error updating game:', updateError);
               throw updateError;
             }
 
-            console.log('Game updated successfully');
             setGameState({ ...existingGame, ...updatedState });
             setPlayerColor(existingGame.white_player ? 'black' : 'white');
             
@@ -281,7 +249,6 @@ const Game = () => {
               payload: { ...existingGame, ...updatedState }
             });
           } else {
-            console.log('Setting existing game state');
             setGameState(existingGame);
             if (existingGame.white_player === playerId) {
               setPlayerColor('white');
@@ -334,16 +301,15 @@ const Game = () => {
       } catch (error) {
         console.error('Error initializing game:', error);
         toast({
-          title: "Erreur",
-          description: "Impossible d'initialiser la partie. Veuillez réessayer.",
+          title: "Error",
+          description: "Failed to initialize game. Please try again.",
           variant: "destructive"
         });
-        navigate('/');
       }
     };
 
     initializeGameState();
-  }, [id, playerId, navigate, settings, isConnecting]);
+  }, [id, playerId, navigate, settings]);
 
   useEffect(() => {
     if (gameState?.players.length === 2) {
@@ -564,21 +530,11 @@ const Game = () => {
     } : {}),
   };
 
-  if (isConnecting) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-background">
-        <div className="text-center">
-          <h2 className="text-2xl font-bold text-foreground">Connexion au serveur...</h2>
-        </div>
-      </div>
-    );
-  }
-
   if (!isInitialized) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
         <div className="text-center">
-          <h2 className="text-2xl font-bold text-foreground">Initialisation de la partie...</h2>
+          <h2 className="text-2xl font-bold text-foreground">Initializing game...</h2>
         </div>
       </div>
     );
