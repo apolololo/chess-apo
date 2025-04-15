@@ -32,7 +32,7 @@ const Index = () => {
       <div className="w-full max-w-md p-6 bg-card rounded-lg shadow-lg space-y-8">
         <div className="text-center">
           <h1 className="text-4xl font-bold text-foreground mb-2">Jeu d'Échecs</h1>
-          <p className="text-muted-foreground">Configurez votre partie</p>
+          <p className="text-muted-foreground">Créez une partie privée</p>
         </div>
 
         <div className="space-y-4">
@@ -78,7 +78,7 @@ const Index = () => {
         </div>
 
         <Button onClick={createGame} size="lg" className="w-full">
-          Créer une nouvelle partie
+          Créer une partie privée
         </Button>
       </div>
     </div>

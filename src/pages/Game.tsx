@@ -42,7 +42,7 @@ interface Timer {
   seconds: number;
 }
 
-const SITE_URL = 'https://chess-apo.netlify.app';
+const SITE_URL = window.location.origin;
 
 const formatTime = (totalSeconds: number): Timer => {
   const minutes = Math.floor(totalSeconds / 60);
@@ -65,7 +65,7 @@ const Game = () => {
   const [blackTime, setBlackTime] = useState<Timer>({ minutes: settings.time_control, seconds: 0 });
   const [lastMove, setLastMove] = useState<{ from: string; to: string } | null>(null);
   const timerInterval = useRef<NodeJS.Timeout | null>(null);
-  const { playMove, playCapture, playGameEnd, playNotify } = useChessSounds();
+  const { playMove, playCapture, playGameEnd } = useChessSounds();
   const [boardWidth, setBoardWidth] = useState(560);
   const { toast } = useToast();
 
@@ -92,7 +92,7 @@ const Game = () => {
   }, []);
 
   const cleanupGame = async () => {
-    if (id && gameState?.creator === playerId) {
+    if (id && gameState?.creator === playerId && !gameState.started_at) {
       try {
         await supabase
           .from('games')
@@ -433,8 +433,8 @@ const Game = () => {
     const url = `${SITE_URL}/game/${id}`;
     navigator.clipboard.writeText(url);
     toast({
-      title: "Link copied!",
-      description: "Share this link with your opponent to start the game.",
+      title: "Lien copié !",
+      description: "Partagez ce lien avec votre adversaire pour commencer la partie.",
     });
   };
 
@@ -471,8 +471,8 @@ const Game = () => {
     if (!id || !playerColor) return;
     updateGameState({ pending_draw_offer: playerId });
     toast({
-      title: "Draw offered",
-      description: "Waiting for opponent's response..."
+      title: "Nulle proposée",
+      description: "En attente de la réponse de l'adversaire..."
     });
   };
 
@@ -484,12 +484,12 @@ const Game = () => {
         game_result: '½-½'
       });
       toast({
-        title: "Game drawn by agreement",
+        title: "Partie nulle par accord mutuel",
       });
     } else {
       updateGameState({ pending_draw_offer: null });
       toast({
-        title: "Draw offer declined",
+        title: "Proposition de nulle refusée",
       });
     }
   };
@@ -500,7 +500,7 @@ const Game = () => {
       game_result: playerColor === 'white' ? '0-1' : '1-0'
     });
     toast({
-      title: `${playerColor === 'white' ? 'Black' : 'White'} wins by resignation`,
+      title: `Les ${playerColor === 'white' ? 'Noirs' : 'Blancs'} gagnent par abandon`,
     });
   };
 
@@ -508,8 +508,8 @@ const Game = () => {
     if (!id || !playerColor || !gameState) return;
     updateGameState({ pending_takeback_request: playerId });
     toast({
-      title: "Takeback requested",
-      description: "Waiting for opponent's response..."
+      title: "Reprise du coup demandée",
+      description: "En attente de la réponse de l'adversaire..."
     });
   };
 
@@ -537,12 +537,12 @@ const Game = () => {
       setGame(newGame);
       setLastMove(null);
       toast({
-        title: "Takeback accepted",
+        title: "Reprise du coup acceptée",
       });
     } else {
       updateGameState({ pending_takeback_request: null });
       toast({
-        title: "Takeback declined",
+        title: "Reprise du coup refusée",
       });
     }
   };
@@ -567,7 +567,7 @@ const Game = () => {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
         <div className="text-center">
-          <h2 className="text-2xl font-bold text-foreground">Initializing game...</h2>
+          <h2 className="text-2xl font-bold text-foreground">Initialisation de la partie...</h2>
         </div>
       </div>
     );
@@ -577,9 +577,9 @@ const Game = () => {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-background p-4">
         <div className="text-center space-y-4">
-          <h2 className="text-2xl font-bold text-foreground">Waiting for opponent...</h2>
-          <p className="text-muted-foreground">Share this link with your opponent to start the game</p>
-          <Button onClick={copyGameLink}>Copy Game Link</Button>
+          <h2 className="text-2xl font-bold text-foreground">En attente d'un adversaire...</h2>
+          <p className="text-muted-foreground">Partagez ce lien avec votre adversaire pour commencer la partie</p>
+          <Button onClick={copyGameLink} size="lg">Copier le lien</Button>
         </div>
       </div>
     );
