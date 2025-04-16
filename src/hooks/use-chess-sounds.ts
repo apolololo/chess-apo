@@ -8,17 +8,21 @@ const CAPTURE_URL = 'https://raw.githubusercontent.com/lichess-org/lila/master/p
 const GAME_END_URL = 'https://raw.githubusercontent.com/lichess-org/lila/master/public/sound/standard/GenericNotify.mp3';
 // Son de notification
 const NOTIFY_URL = 'https://raw.githubusercontent.com/lichess-org/lila/master/public/sound/standard/Tournament1st.mp3';
+// Son d'échec
+const CHECK_URL = 'https://raw.githubusercontent.com/lichess-org/lila/master/public/sound/standard/Check.mp3';
 
 export function useChessSounds() {
   const [playMove] = useSound(MOVE_URL, { volume: 0.5 });
   const [playCapture] = useSound(CAPTURE_URL, { volume: 0.5 });
   const [playGameEnd] = useSound(GAME_END_URL, { volume: 0.5 });
   const [playNotify] = useSound(NOTIFY_URL, { volume: 0.5 });
+  const [playCheck] = useSound(CHECK_URL, { volume: 0.5 });
 
   return {
     playMove,
     playCapture,
     playGameEnd,
-    playNotify
+    playNotify,
+    playCheck
   };
 }
