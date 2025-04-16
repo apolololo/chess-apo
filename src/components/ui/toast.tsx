@@ -114,8 +114,6 @@ type ToastProps = React.ComponentPropsWithoutRef<typeof Toast>
 
 type ToastActionElement = React.ReactElement<typeof ToastAction>
 
-import { useToast, toast } from "@/hooks/use-toast"
-
 export {
   type ToastProps,
   type ToastActionElement,
@@ -126,6 +124,4 @@ export {
   ToastDescription,
   ToastClose,
   ToastAction,
-  useToast,
-  toast,
 }

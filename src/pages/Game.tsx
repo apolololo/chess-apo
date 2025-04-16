@@ -1,11 +1,18 @@
 import { useEffect, useState, useRef } from 'react';
-import { useParams, useNavigate, useLocation } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
 import { Chessboard } from 'react-chessboard';
 import { Chess } from 'chess.js';
 import { supabase } from '@/lib/supabase';
 import { Button } from '@/components/ui/button';
-import { useToast } from '@/hooks/use-toast';
+import { toast } from '@/components/ui/use-toast';
 import { useChessSounds } from '@/hooks/use-chess-sounds';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 interface GameState {
   id: string;
@@ -29,7 +36,6 @@ interface GameState {
     black: number;
     draws: number;
   };
-  last_move_time?: string;
 }
 
 interface GameSettings {
@@ -42,7 +48,7 @@ interface Timer {
   seconds: number;
 }
 
-const SITE_URL = window.location.origin;
+const SITE_URL = 'https://chess-apo.netlify.app';
 
 const formatTime = (totalSeconds: number): Timer => {
   const minutes = Math.floor(totalSeconds / 60);
@@ -53,33 +59,37 @@ const formatTime = (totalSeconds: number): Timer => {
 const Game = () => {
   const { id } = useParams();
   const navigate = useNavigate();
-  const location = useLocation();
   const [game, setGame] = useState(new Chess());
   const [gameState, setGameState] = useState<GameState | null>(null);
   const [playerId] = useState(() => crypto.randomUUID());
   const [isWaiting, setIsWaiting] = useState(true);
   const [playerColor, setPlayerColor] = useState<'white' | 'black' | null>(null);
-  const [settings] = useState<GameSettings>(location.state || { time_control: 10, increment: 5 });
+  const [settings, setSettings] = useState<GameSettings>({
+    time_control: 10,
+    increment: 5,
+  });
+  const [showSettings, setShowSettings] = useState(true);
   const [isInitialized, setIsInitialized] = useState(false);
-  const [whiteTime, setWhiteTime] = useState<Timer>({ minutes: settings.time_control, seconds: 0 });
-  const [blackTime, setBlackTime] = useState<Timer>({ minutes: settings.time_control, seconds: 0 });
+  const [whiteTime, setWhiteTime] = useState<Timer>({ minutes: 10, seconds: 0 });
+  const [blackTime, setBlackTime] = useState<Timer>({ minutes: 10, seconds: 0 });
   const [lastMove, setLastMove] = useState<{ from: string; to: string } | null>(null);
   const timerInterval = useRef<NodeJS.Timeout | null>(null);
-  const { playMove, playCapture, playGameEnd } = useChessSounds();
+  const { playMove, playCapture, playGameEnd, playNotify } = useChessSounds();
   const [boardWidth, setBoardWidth] = useState(560);
-  const { toast } = useToast();
 
   useEffect(() => {
     const updateBoardSize = () => {
       const windowWidth = window.innerWidth;
       const windowHeight = window.innerHeight;
-      const sidebarWidth = 300;
-      const padding = 32;
-      const timerHeight = 80;
+      const sidebarWidth = 300; // Width of the right sidebar
+      const padding = 32; // Total horizontal padding
+      const timerHeight = 80; // Total height for timers (top and bottom)
       
+      // Calculate available space
       const availableWidth = windowWidth - sidebarWidth - padding;
       const availableHeight = windowHeight - timerHeight;
       
+      // Use the smaller dimension to maintain square aspect ratio
       const size = Math.min(availableWidth, availableHeight);
       
       setBoardWidth(size);
@@ -92,15 +102,11 @@ const Game = () => {
   }, []);
 
   const cleanupGame = async () => {
-    if (id && gameState?.creator === playerId && !gameState.started_at) {
-      try {
-        await supabase
-          .from('games')
-          .delete()
-          .eq('id', id);
-      } catch (error) {
-        console.error('Error cleaning up game:', error);
-      }
+    if (id) {
+      await supabase
+        .from('games')
+        .delete()
+        .eq('id', id);
     }
   };
 
@@ -115,7 +121,7 @@ const Game = () => {
       window.removeEventListener('beforeunload', handleUnload);
       cleanupGame();
     };
-  }, [id, gameState?.creator, playerId]);
+  }, [id]);
 
   const startTimers = () => {
     if (timerInterval.current) {
@@ -126,33 +132,25 @@ const Game = () => {
       if (!gameState || gameState.game_result) return;
 
       const currentTime = new Date().getTime();
-      const lastMoveTime = gameState.last_move_time ? new Date(gameState.last_move_time).getTime() : currentTime;
-      const elapsedSeconds = Math.floor((currentTime - lastMoveTime) / 1000);
+      const startTime = gameState.started_at ? new Date(gameState.started_at).getTime() : currentTime;
+      const elapsedSeconds = Math.floor((currentTime - startTime) / 1000);
 
-      if (gameState.current_turn === 'white') {
-        const newWhiteTime = Math.max(0, gameState.white_time - elapsedSeconds);
-        setWhiteTime(formatTime(newWhiteTime));
-        setBlackTime(formatTime(gameState.black_time));
+      const whiteTimeLeft = Math.max(0, gameState.white_time - (gameState.current_turn === 'white' ? elapsedSeconds : 0));
+      const blackTimeLeft = Math.max(0, gameState.black_time - (gameState.current_turn === 'black' ? elapsedSeconds : 0));
 
-        if (newWhiteTime <= 0) {
-          await updateGameState({
-            game_result: '0-1',
-            white_time: 0,
-            black_time: gameState.black_time
-          });
-        }
-      } else {
-        const newBlackTime = Math.max(0, gameState.black_time - elapsedSeconds);
-        setWhiteTime(formatTime(gameState.white_time));
-        setBlackTime(formatTime(newBlackTime));
+      setWhiteTime(formatTime(whiteTimeLeft));
+      setBlackTime(formatTime(blackTimeLeft));
 
-        if (newBlackTime <= 0) {
-          await updateGameState({
-            game_result: '1-0',
-            white_time: gameState.white_time,
-            black_time: 0
-          });
-        }
+      if (whiteTimeLeft === 0 || blackTimeLeft === 0) {
+        const winner = whiteTimeLeft === 0 ? 'black' : 'white';
+        await updateGameState({
+          game_result: winner === 'white' ? '1-0' : '0-1'
+        });
+        clearInterval(timerInterval.current);
+        toast({
+          title: `Partie terminée`,
+          description: `${winner === 'white' ? 'Blancs' : 'Noirs'} gagnent au temps`,
+        });
       }
     }, 1000);
   };
@@ -193,8 +191,7 @@ const Game = () => {
 
         if (!existingGame) {
           const isWhite = Math.random() < 0.5;
-          const initialState: Partial<GameState> = {
-            id,
+          const initialState: Omit<GameState, 'id'> = {
             players: [playerId],
             current_turn: 'white',
             pgn: '',
@@ -205,20 +202,21 @@ const Game = () => {
             white_time: settings.time_control * 60,
             black_time: settings.time_control * 60,
             white_player: isWhite ? playerId : undefined,
-            black_player: isWhite ? undefined : playerId,
-            last_move_time: new Date().toISOString()
+            black_player: isWhite ? undefined : playerId
           };
 
           const { error: insertError } = await supabase
             .from('games')
-            .insert([initialState]);
+            .insert([{ id, ...initialState }]);
 
           if (insertError) {
             throw insertError;
           }
 
-          setGameState(initialState as GameState);
+          setGameState({ id, ...initialState });
           setPlayerColor(isWhite ? 'white' : 'black');
+          setShowSettings(true);
+          
           setWhiteTime(formatTime(settings.time_control * 60));
           setBlackTime(formatTime(settings.time_control * 60));
         } else {
@@ -230,8 +228,7 @@ const Game = () => {
               players: updatedPlayers,
               started_at,
               white_player: existingGame.white_player || (existingGame.black_player ? playerId : undefined),
-              black_player: existingGame.black_player || (existingGame.white_player ? playerId : undefined),
-              last_move_time: started_at
+              black_player: existingGame.black_player || (existingGame.white_player ? playerId : undefined)
             };
 
             const { error: updateError } = await supabase
@@ -245,8 +242,9 @@ const Game = () => {
 
             setGameState({ ...existingGame, ...updatedState });
             setPlayerColor(existingGame.white_player ? 'black' : 'white');
-            setWhiteTime(formatTime(existingGame.white_time));
-            setBlackTime(formatTime(existingGame.black_time));
+            
+            setWhiteTime(formatTime(existingGame.time_control * 60));
+            setBlackTime(formatTime(existingGame.time_control * 60));
             
             channel.send({
               type: 'broadcast',
@@ -255,33 +253,23 @@ const Game = () => {
             });
           } else {
             setGameState(existingGame);
-            setPlayerColor(
-              existingGame.white_player === playerId ? 'white' :
-              existingGame.black_player === playerId ? 'black' :
-              null
-            );
-            setWhiteTime(formatTime(existingGame.white_time));
-            setBlackTime(formatTime(existingGame.black_time));
+            if (existingGame.white_player === playerId) {
+              setPlayerColor('white');
+            } else if (existingGame.black_player === playerId) {
+              setPlayerColor('black');
+            }
+            
+            setWhiteTime(formatTime(existingGame.time_control * 60));
+            setBlackTime(formatTime(existingGame.time_control * 60));
           }
 
           if (existingGame.pgn) {
             const tempGame = new Chess();
-            try {
-              tempGame.loadPgn(existingGame.pgn);
-              setGame(tempGame);
-              
-              const history = tempGame.history({ verbose: true });
-              if (history.length > 0) {
-                const lastMoveInfo = history[history.length - 1];
-                setLastMove({ from: lastMoveInfo.from, to: lastMoveInfo.to });
-              }
-            } catch (error) {
-              console.error('Error loading PGN:', error);
-              toast({
-                title: "Error",
-                description: "Failed to load game state",
-                variant: "destructive"
-              });
+            tempGame.loadPgn(existingGame.pgn);
+            const history = tempGame.history({ verbose: true });
+            if (history.length > 0) {
+              const lastMoveInfo = history[history.length - 1];
+              setLastMove({ from: lastMoveInfo.from, to: lastMoveInfo.to });
             }
           }
         }
@@ -302,15 +290,11 @@ const Game = () => {
                 }
               } catch (error) {
                 console.error('Error loading PGN:', error);
-                toast({
-                  title: "Error",
-                  description: "Failed to sync game state",
-                  variant: "destructive"
-                });
               }
             }
             
             if (payload.players.length === 2 && payload.started_at) {
+              setShowSettings(false);
               setIsWaiting(false);
               startTimers();
             }
@@ -325,15 +309,15 @@ const Game = () => {
           description: "Failed to initialize game. Please try again.",
           variant: "destructive"
         });
-        navigate('/');
       }
     };
 
     initializeGameState();
-  }, [id, playerId, navigate, settings.time_control, settings.increment]);
+  }, [id, playerId, navigate, settings]);
 
   useEffect(() => {
     if (gameState?.players.length === 2) {
+      setShowSettings(false);
       setIsWaiting(false);
       if (gameState.started_at) {
         startTimers();
@@ -341,7 +325,7 @@ const Game = () => {
     } else {
       setIsWaiting(true);
     }
-  }, [gameState?.players.length, gameState?.started_at]);
+  }, [gameState?.players, gameState?.started_at]);
 
   const makeMove = async (move: any) => {
     if (!gameState || isWaiting || !id) return false;
@@ -360,20 +344,16 @@ const Game = () => {
         }
 
         const currentTime = new Date().getTime();
-        const lastMoveTime = gameState.last_move_time ? new Date(gameState.last_move_time).getTime() : currentTime;
-        const elapsedSeconds = Math.floor((currentTime - lastMoveTime) / 1000);
+        const startTime = gameState.started_at ? new Date(gameState.started_at).getTime() : currentTime;
+        const elapsedSeconds = Math.floor((currentTime - startTime) / 1000);
         
         const newState = {
+          ...gameState,
           current_turn: game.turn() === 'w' ? 'black' : 'white',
           pgn: newGame.pgn(),
           moves: [...(gameState.moves || []), `${game.turn() === 'w' ? 'White' : 'Black'}: ${move.from}${move.to}`],
-          white_time: game.turn() === 'b' ? 
-            Math.max(0, gameState.white_time - (gameState.current_turn === 'white' ? elapsedSeconds : 0) + gameState.increment) : 
-            gameState.white_time,
-          black_time: game.turn() === 'w' ? 
-            Math.max(0, gameState.black_time - (gameState.current_turn === 'black' ? elapsedSeconds : 0) + gameState.increment) : 
-            gameState.black_time,
-          last_move_time: new Date().toISOString()
+          white_time: game.turn() === 'b' ? gameState.white_time + gameState.increment : gameState.white_time,
+          black_time: game.turn() === 'w' ? gameState.black_time + gameState.increment : gameState.black_time
         };
 
         setLastMove({ from: move.from, to: move.to });
@@ -391,29 +371,19 @@ const Game = () => {
         channel.send({
           type: 'broadcast',
           event: 'game_state',
-          payload: { ...gameState, ...newState }
+          payload: newState
         });
 
         setGame(newGame);
 
         if (newGame.isGameOver()) {
           playGameEnd();
-          let result = '½-½';
-          if (newGame.isCheckmate()) {
-            result = game.turn() === 'w' ? '0-1' : '1-0';
-          }
-          await updateGameState({ game_result: result });
         }
 
         return true;
       }
     } catch (error) {
       console.error('Error making move:', error);
-      toast({
-        title: "Error",
-        description: "Failed to make move. Please try again.",
-        variant: "destructive"
-      });
       return false;
     }
     return false;
@@ -433,8 +403,8 @@ const Game = () => {
     const url = `${SITE_URL}/game/${id}`;
     navigator.clipboard.writeText(url);
     toast({
-      title: "Lien copié !",
-      description: "Partagez ce lien avec votre adversaire pour commencer la partie.",
+      title: "Link copied!",
+      description: "Share this link with your opponent to start the game.",
     });
   };
 
@@ -471,8 +441,8 @@ const Game = () => {
     if (!id || !playerColor) return;
     updateGameState({ pending_draw_offer: playerId });
     toast({
-      title: "Nulle proposée",
-      description: "En attente de la réponse de l'adversaire..."
+      title: "Draw offered",
+      description: "Waiting for opponent's response..."
     });
   };
 
@@ -484,12 +454,12 @@ const Game = () => {
         game_result: '½-½'
       });
       toast({
-        title: "Partie nulle par accord mutuel",
+        title: "Game drawn by agreement",
       });
     } else {
       updateGameState({ pending_draw_offer: null });
       toast({
-        title: "Proposition de nulle refusée",
+        title: "Draw offer declined",
       });
     }
   };
@@ -500,7 +470,7 @@ const Game = () => {
       game_result: playerColor === 'white' ? '0-1' : '1-0'
     });
     toast({
-      title: `Les ${playerColor === 'white' ? 'Noirs' : 'Blancs'} gagnent par abandon`,
+      title: `${playerColor === 'white' ? 'Black' : 'White'} wins by resignation`,
     });
   };
 
@@ -508,8 +478,8 @@ const Game = () => {
     if (!id || !playerColor || !gameState) return;
     updateGameState({ pending_takeback_request: playerId });
     toast({
-      title: "Reprise du coup demandée",
-      description: "En attente de la réponse de l'adversaire..."
+      title: "Takeback requested",
+      description: "Waiting for opponent's response..."
     });
   };
 
@@ -530,19 +500,18 @@ const Game = () => {
         pending_takeback_request: null,
         pgn: newGame.pgn(),
         moves: gameState.moves.slice(0, -1),
-        current_turn: isWhiteMove ? 'white' : 'black',
-        last_move_time: new Date().toISOString()
+        current_turn: isWhiteMove ? 'white' : 'black'
       });
       
       setGame(newGame);
       setLastMove(null);
       toast({
-        title: "Reprise du coup acceptée",
+        title: "Takeback accepted",
       });
     } else {
       updateGameState({ pending_takeback_request: null });
       toast({
-        title: "Reprise du coup refusée",
+        title: "Takeback declined",
       });
     }
   };
@@ -550,10 +519,7 @@ const Game = () => {
   const requestRematch = () => {
     if (!id || !playerColor || !gameState) return;
     const newGameId = crypto.randomUUID();
-    navigate(`/game/${newGameId}`, { state: { 
-      time_control: gameState.time_control,
-      increment: gameState.increment
-    }});
+    navigate(`/game/${newGameId}`);
   };
 
   const customSquareStyles = {
@@ -567,7 +533,70 @@ const Game = () => {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
         <div className="text-center">
-          <h2 className="text-2xl font-bold text-foreground">Initialisation de la partie...</h2>
+          <h2 className="text-2xl font-bold text-foreground">Initializing game...</h2>
+        </div>
+      </div>
+    );
+  }
+
+  if (showSettings) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-background p-4">
+        <div className="w-full max-w-md p-6 bg-card rounded-lg shadow-lg">
+          <h2 className="text-2xl font-bold text-center mb-6">Game Settings</h2>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Time Control (minutes)</label>
+              <Select
+                value={settings.time_control.toString()}
+                onValueChange={(value) => {
+                  const newTimeControl = parseInt(value);
+                  setSettings(prev => ({ ...prev, time_control: newTimeControl }));
+                  setWhiteTime(formatTime(newTimeControl * 60));
+                  setBlackTime(formatTime(newTimeControl * 60));
+                }}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="1">1</SelectItem>
+                  <SelectItem value="3">3</SelectItem>
+                  <SelectItem value="5">5</SelectItem>
+                  <SelectItem value="10">10</SelectItem>
+                  <SelectItem value="15">15</SelectItem>
+                  <SelectItem value="30">30</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Increment (seconds)</label>
+              <Select
+                value={settings.increment.toString()}
+                onValueChange={(value) => setSettings(prev => ({ ...prev, increment: parseInt(value) }))}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="0">0</SelectItem>
+                  <SelectItem value="1">1</SelectItem>
+                  <SelectItem value="2">2</SelectItem>
+                  <SelectItem value="3">3</SelectItem>
+                  <SelectItem value="5">5</SelectItem>
+                  <SelectItem value="10">10</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex justify-between pt-4">
+              <Button onClick={() => setShowSettings(false)}>
+                Start Game
+              </Button>
+              <Button onClick={copyGameLink} variant="outline">
+                Copy Game Link
+              </Button>
+            </div>
+          </div>
         </div>
       </div>
     );
@@ -577,9 +606,9 @@ const Game = () => {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-background p-4">
         <div className="text-center space-y-4">
-          <h2 className="text-2xl font-bold text-foreground">En attente d'un adversaire...</h2>
-          <p className="text-muted-foreground">Partagez ce lien avec votre adversaire pour commencer la partie</p>
-          <Button onClick={copyGameLink} size="lg">Copier le lien</Button>
+          <h2 className="text-2xl font-bold text-foreground">Waiting for opponent...</h2>
+          <p className="text-muted-foreground">Share this link with your opponent to start the game</p>
+          <Button onClick={copyGameLink}>Copy Game Link</Button>
         </div>
       </div>
     );
